@@ -71,14 +71,12 @@ html,body,[class*="css"]{font-family:'Nunito',sans-serif;color:var(--tx);}
 .header-text p{font-size:.68rem;color:var(--am);margin:.1rem 0 0;letter-spacing:.16em;text-transform:uppercase;opacity:.9;}
 
 /* ── Métricas ── */
-.metric-card{background:var(--wh);border-radius:14px;padding:1.1rem 1.3rem;border:1px solid var(--bd);border-top:4px solid var(--vm);box-shadow:var(--shadow);transition:transform .2s,box-shadow .2s;overflow:hidden;position:relative;}
-.metric-card:hover{transform:translateY(-3px);box-shadow:0 8px 28px rgba(10,61,31,.13);}
-.metric-card::after{content:'';position:absolute;top:0;right:0;width:48px;height:48px;background:var(--vmt);border-radius:0 0 0 48px;opacity:.55;}
-.metric-num{font-family:'Oswald',sans-serif;font-size:2.4rem;font-weight:700;color:var(--vd);line-height:1;margin-bottom:.15rem;}
-.metric-lbl{font-size:.76rem;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.07em;}
-.mc-ativo{border-top-color:#22a356;} .mc-ativo .metric-num{color:#0d6632;}
-.mc-atualiz{border-top-color:#e67e22;} .mc-atualiz .metric-num{color:#944f00;}
-.mc-pendente{border-top-color:#c0392b;} .mc-pendente .metric-num{color:#7a1515;}
+.metric-card{background:var(--wh);border-radius:2px;padding:.85rem 1rem;border:1px solid var(--bd);border-left:3px solid var(--vm);}
+.metric-num{font-family:'Oswald',sans-serif;font-size:2rem;font-weight:700;color:var(--vd);line-height:1;margin-bottom:.2rem;}
+.metric-lbl{font-size:.72rem;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;}
+.mc-ativo{border-left-color:#0d6632;} .mc-ativo .metric-num{color:#0d6632;}
+.mc-atualiz{border-left-color:#944f00;} .mc-atualiz .metric-num{color:#944f00;}
+.mc-pendente{border-left-color:#7a1515;} .mc-pendente .metric-num{color:#7a1515;}
 
 /* ── Sidebar elementos ── */
 .sb-section{font-size:.62rem;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:var(--am);padding:.9rem 0 .3rem;display:block;border-top:1px solid rgba(248,193,10,.1);margin-top:.4rem;}
@@ -346,17 +344,17 @@ with tabs[0]:
                if not df_raw.empty and "status" in df_raw.columns else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    for cw, num, lbl, cls, ico in [
-        (c1, total,            "Total",          "",            "📋"),
-        (c2, cnt("ATIVO"),     "Ativos",         " mc-ativo",   "✅"),
-        (c3, cnt("ATUALIZA"),  "Em Atualização", " mc-atualiz", "🔄"),
-        (c4, cnt("PENDENTE"),  "Pendentes",      " mc-pendente","⏳"),
+    for cw, num, lbl, cls in [
+        (c1, total,            "Total",          ""),
+        (c2, cnt("ATIVO"),     "Ativos",         " mc-ativo"),
+        (c3, cnt("ATUALIZA"),  "Em Atualização", " mc-atualiz"),
+        (c4, cnt("PENDENTE"),  "Pendentes",      " mc-pendente"),
     ]:
         with cw:
             st.markdown(
                 f'<div class="metric-card{cls}">'
                 f'<div class="metric-num">{num}</div>'
-                f'<div class="metric-lbl">{ico} {lbl}</div></div>',
+                f'<div class="metric-lbl">{lbl}</div></div>',
                 unsafe_allow_html=True
             )
 
