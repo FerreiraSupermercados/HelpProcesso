@@ -159,7 +159,7 @@ def check_credentials(u, p):
 def is_admin(u):
     return u in st.secrets.get("admins", [])
 
-@st.dialog("🔒 Termo de Ciência — LGPD", width="large")
+@st.dialog("Termo de Ciência — LGPD", width="large")
 def lgpd_modal():
     st.markdown("""
     <div style="text-align:center;margin-bottom:.5rem;">
@@ -274,7 +274,7 @@ with st.sidebar:
     <div class="sb-user"><span>👤</span><span>{{_user}}</span>{{ab}}</div>
     """, unsafe_allow_html=True)
 
-    if st.button("🚪 Sair", use_container_width=True):
+    if st.button("Sair", use_container_width=True):
         [st.session_state.pop(k, None) for k in ["auth","username","admin"]]
         st.cache_data.clear(); st.rerun()
 
@@ -333,9 +333,9 @@ st.markdown(f"""
 </div>""", unsafe_allow_html=True)
 
 # ── Abas ──────────────────────────────────────────────────────────────────────
-tab_labels = ["📋 Processos"]
+tab_labels = ["Processos"]
 if _admin:
-    tab_labels += ["➕ Novo Processo", "✏️ Gerenciar"]
+    tab_labels += ["Novo Processo", "Gerenciar"]
 tabs = st.tabs(tab_labels)
 
 # ════════════ ABA 1 — VISUALIZAÇÃO ════════════════════════════════════════════
@@ -452,7 +452,7 @@ if _admin:
     with tabs[1]:
         st.markdown("""
         <div class="admin-header">
-            <span style="font-size:1.4rem;">➕</span>
+            <span style="font-size:1.4rem;"></span>
             <div><div class="admin-title">Cadastrar Novo Processo</div>
             <div class="admin-sub">Preencha os campos e salve no banco de dados.</div></div>
         </div>""", unsafe_allow_html=True)
@@ -484,9 +484,9 @@ if _admin:
             n_rev = st.text_input("Revisado pelo Gestor")
             n_obs = st.text_area("Observações", height=80)
 
-            st.caption("⚠️ O PDF deve estar no Drive com permissão 'Qualquer pessoa com o link pode visualizar'.")
+            st.caption("O PDF deve estar no Drive com permissão 'Qualquer pessoa com o link pode visualizar'.")
 
-            if st.form_submit_button("💾 Salvar Processo", use_container_width=True):
+            if st.form_submit_button("Salvar Processo", use_container_width=True):
                 if not n_pr.strip():
                     st.error("O campo 'Processo' é obrigatório.")
                 else:
@@ -521,7 +521,7 @@ if _admin:
     with tabs[2]:
         st.markdown("""
         <div class="admin-header">
-            <span style="font-size:1.4rem;">✏️</span>
+            <span style="font-size:1.4rem;"></span>
             <div><div class="admin-title">Gerenciar Processos</div>
             <div class="admin-sub">Edite campos ou remova processos existentes.</div></div>
         </div>""", unsafe_allow_html=True)
