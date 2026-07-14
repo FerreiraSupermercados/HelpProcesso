@@ -10,7 +10,7 @@ from db import (
     listar_processos, inserir_processo, atualizar_processo, deletar_processo,
     filter_opts, drive_preview, drive_direct,
     COLS_TABELA, LABELS, COL, STATUS_OPTS, CRITICIDADE_OPTS,
-    usuario_aceitou_lgpd, registrar_aceite_lgpd,   # ← adicione aqui
+    usuario_aceitou_lgpd, registrar_aceite_lgpd,   
 )
 
 def _img_b64(path: str) -> str:
@@ -149,7 +149,6 @@ table.fff-table tbody td.c-doc{text-align:center;white-space:nowrap;}
 </style>
 """, unsafe_allow_html=True)
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def check_credentials(u, p):
     return st.secrets.get("users", {}).get(u) == p
@@ -178,7 +177,7 @@ def lgpd_modal():
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("✅ Aceitar e Entrar", use_container_width=True, type="primary"):
+        if st.button("Aceitar e Entrar", use_container_width=True, type="primary"):
             try:
                 registrar_aceite_lgpd(_user)
                 st.session_state["lgpd_ok"] = True
@@ -186,7 +185,7 @@ def lgpd_modal():
             except Exception as e:
                 st.error(f"Erro ao registrar aceite: {e}")
     with col2:
-        if st.button("❌ Recusar e Sair", use_container_width=True):
+        if st.button("Recusar e Sair", use_container_width=True):
             for k in ["auth", "username", "admin", "lgpd_ok"]:
                 st.session_state.pop(k, None)
             st.rerun()
@@ -200,7 +199,7 @@ def lgpd_gate():
         st.session_state["lgpd_ok"] = True
         return True
 
-    # Abre o modal nativo — botões funcionam corretamente
+
     lgpd_modal()
     return False
 def login_screen():
@@ -234,10 +233,10 @@ if not st.session_state.get("auth"):
 _user  = st.session_state["username"]
 _admin = st.session_state.get("admin", False)
 
-# ── Verificação LGPD ──────────────────────────────────────────────────────────
+
 if not lgpd_gate():
     st.stop()
-# ── Helpers de renderização ───────────────────────────────────────────────────
+
 
 def badge_status(v):
     s = v.upper()
@@ -260,7 +259,7 @@ def apply_filter(df, col, val):
 def load():
     return listar_processos()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+
 with st.sidebar:
     ab = '<span class="sb-admin">Admin</span>' if _admin else ""
     _logo_s_tag = f'<img src="{_LOGO_SIDEBAR}" class="sb-logo-img" alt="Ferreira Supermercados">' if _LOGO_SIDEBAR else '<div class="sb-fff">FFF</div>'
@@ -301,7 +300,6 @@ with st.sidebar:
     if st.button("🔄 Atualizar", use_container_width=True):
         st.cache_data.clear(); st.rerun()
 
-# ── Filtros ───────────────────────────────────────────────────────────────────
 df = df_raw.copy() if not df_raw.empty else pd.DataFrame()
 if not df.empty:
     for col, val in [
@@ -319,7 +317,7 @@ if not df.empty:
         ).any(axis=1)
         df = df[mask]
 
-# ── Header ────────────────────────────────────────────────────────────────────
+
 _logo_h_tag = f'<img src="{_LOGO_HEADER}" class="fff-logo-img" alt="Ferreira Supermercados">' if _LOGO_HEADER else '<div class="fff-badge">FFF</div>'
 st.markdown(f"""
 <div class="fff-header">
@@ -330,13 +328,11 @@ st.markdown(f"""
     </div>
 </div>""", unsafe_allow_html=True)
 
-# ── Abas ──────────────────────────────────────────────────────────────────────
 tab_labels = ["Processos"]
 if _admin:
     tab_labels += ["Novo Processo", "Gerenciar"]
 tabs = st.tabs(tab_labels)
 
-# ════════════ ABA 1 — VISUALIZAÇÃO ════════════════════════════════════════════
 with tabs[0]:
     total = len(df_raw)
     def cnt(kw):
@@ -368,7 +364,7 @@ with tabs[0]:
     st.markdown(f"""
     <div class="table-wrap">
       <div class="table-toolbar">
-        <span class="results-pill">📋 {n_filt} processo(s)</span>
+        <span class="results-pill">{n_filt} processo(s)</span>
         <span style="font-size:.72rem;color:var(--mu);">{total} total · filtre pela barra lateral</span>
       </div>""", unsafe_allow_html=True)
 
@@ -377,7 +373,7 @@ with tabs[0]:
         st.info("Nenhum processo encontrado com os filtros aplicados.")
     else:
         th = "".join(f"<th>{LABELS.get(c, c)}</th>" for c in cols_visiveis)
-        th += '<th class="c-doc">📄 Documento</th>'
+        th += '<th class="c-doc">Documento</th>'
 
         tbody = ""
         for _, row in df.iterrows():
@@ -589,7 +585,7 @@ if _admin:
             if delete:
                 try:
                     deletar_processo(int(re_["id"]))
-                    st.success("🗑️ Processo removido.")
+                    st.success("Processo removido.")
                     st.cache_data.clear(); st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao excluir: {e}")
