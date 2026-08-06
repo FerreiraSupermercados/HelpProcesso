@@ -234,3 +234,74 @@ def registrar_aceite_lgpd(usuario: str) -> None:
         raise requests.HTTPError(
             f"{resp.status_code} — {resp.text[:300]}", response=resp
         )
+
+        
+# ── AUDITORIAS ─────────────
+def listar_auditorias(loja: str = None, tipo: str = None) -> pd.DataFrame:
+    """Busca todas as auditorias do Supabase."""
+    # Monta a query
+    params = "?select=*&order=data.desc"
+    if loja:
+        params += f"&loja=eq.{loja}"
+    if tipo:
+        params += f"&tipo=eq.{tipo}"
+    
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/auditorias{params}",
+        headers=HEADERS,
+        timeout=20,
+    )
+    if not resp.ok:
+        print(f"Erro ao buscar auditorias: {resp.status_code} — {resp.text[:200]}")
+        return pd.DataFrame()
+    
+    data = resp.json()
+    if not data:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(data)
+    
+    # Converte topicos de JSON para lista
+    if "topicos" in df.columns:
+        df["topicos"] = df["topicos"].apply(lambda x: x if isinstance(x, list) else [])
+    
+    # Converte criticas de JSON para lista
+    if "criticas" in df.columns:
+        df["criticas"] = df["criticas"].apply(lambda x: x if isinstance(x, list) else [])
+    
+    return df
+
+
+def inserir_auditoria(dados: dict) -> dict:
+    """Insere uma nova auditoria no Supabase."""
+    # Prepara o payload
+    payload = {
+        "loja": dados.get("loja"),
+        "data": dados.get("data"),
+        "tipo": dados.get("tipo"),
+        "avaliador": dados.get("avaliador", "Auditor Controladoria"),
+        "topicos": dados.get("topicos", []),
+        "total": dados.get("total", 0),
+        "criticas": dados.get("criticas", [])
+    }
+    
+    resp = requests.post(
+        f"{SUPABASE_URL}/rest/v1/auditorias",
+        headers=HEADERS,
+        json=payload,
+        timeout=20,
+    )
+    if not resp.ok:
+        raise requests.HTTPError(f"{resp.status_code} — {resp.text[:300]}", response=resp)
+    return resp.json()
+
+
+def deletar_auditoria(auditoria_id: int) -> None:
+    """Deleta uma auditoria pelo ID."""
+    resp = requests.delete(
+        f"{SUPABASE_URL}/rest/v1/auditorias?id=eq.{auditoria_id}",
+        headers=HEADERS,
+        timeout=20,
+    )
+    if not resp.ok:
+        raise requests.HTTPError(f"{resp.status_code} — {resp.text[:300]}", response=resp)
