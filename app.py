@@ -13,7 +13,9 @@ from db import (
     filter_opts, drive_preview, drive_direct,
     COLS_TABELA, LABELS, COL, STATUS_OPTS, CRITICIDADE_OPTS,
     usuario_aceitou_lgpd, registrar_aceite_lgpd,
-    listar_auditorias, inserir_auditoria, deletar_auditoria,  
+    listar_auditorias, inserir_auditoria, deletar_auditoria, atualizar_auditoria,
+    listar_processos_por_frente, normalizar_critica, pop_base_da_frente,
+    buscar_auditoria_existente, CRITICA_CAMPOS,
 )
 
 
@@ -39,7 +41,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Nunito:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Nunito:wght@400;500;600;700;800&family=Barlow+Semi+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
     --vd:#0a3d1f; --vm:#115c2e; --vc:#1a8040; --vmt:#e6f4ec;
@@ -50,6 +52,39 @@ st.markdown("""
 html,body,[class*="css"]{font-family:'Nunito',sans-serif;color:var(--tx);}
 .stApp{background:var(--cr);}
 .block-container{padding:0 1.5rem 3rem!important;}
+
+/* ── Custom Streamlit Tabs ── */
+div[data-baseweb="tab-list"] {
+    background-color: #f4fbf6 !important;
+    border-bottom: 2px solid #b8ddc7 !important;
+    padding: 0 10px !important;
+    border-radius: 12px 12px 0 0 !important;
+    gap: 6px !important;
+}
+
+button[role="tab"] {
+    font-family: 'Barlow Semi Condensed', sans-serif !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    color: #728177 !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 8px 8px 0 0 !important;
+    padding: 10px 16px !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+button[role="tab"]:hover {
+    color: #12331C !important;
+    background-color: rgba(46,158,55,.05) !important;
+}
+
+button[role="tab"][aria-selected="true"] {
+    color: #12331C !important;
+    background-color: #ffffff !important;
+    border-bottom: 4px solid #f8c10a !important;
+    font-weight: 700 !important;
+}
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"]{background:linear-gradient(180deg,var(--vd) 0%,#072812 100%)!important;border-right:4px solid var(--am);}
@@ -75,8 +110,8 @@ html,body,[class*="css"]{font-family:'Nunito',sans-serif;color:var(--tx);}
 .header-text p{font-size:.68rem;color:var(--am);margin:.1rem 0 0;letter-spacing:.16em;text-transform:uppercase;opacity:.9;}
 
 /* ── Métricas ── */
-.metric-card{background:var(--wh);border-radius:2px;padding:.85rem 1rem;border:1px solid var(--bd);border-left:3px solid var(--vm);}
-.metric-num{font-family:'Oswald',sans-serif;font-size:2rem;font-weight:700;color:var(--vd);line-height:1;margin-bottom:.2rem;}
+.metric-card{background:var(--wh);border-radius:12px;padding:.85rem 1rem;border:1px solid var(--bd);border-left:3px solid var(--vm);box-shadow:0 1px 2px rgba(18,51,28,.06),0 4px 16px rgba(18,51,28,.05);}
+.metric-num{font-family:'Barlow Semi Condensed',sans-serif;font-size:2.2rem;font-weight:700;color:var(--vd);line-height:1;margin-bottom:.2rem;}
 .metric-lbl{font-size:.72rem;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;}
 .mc-ativo{border-left-color:#0d6632;} .mc-ativo .metric-num{color:#0d6632;}
 .mc-atualiz{border-left-color:#944f00;} .mc-atualiz .metric-num{color:#944f00;}
@@ -160,6 +195,23 @@ def check_credentials(u, p):
 def is_admin(u):
     return u in st.secrets.get("admins", [])
 
+def _session_token(u: str) -> str:
+    """Token determinístico p/ manter o login após F5, sem expor a senha na URL."""
+    import hashlib
+    segredo = st.secrets.get("session_secret", "fff-central-processos")
+    senha = st.secrets.get("users", {}).get(u, "")
+    return hashlib.sha256(f"{u}:{senha}:{segredo}".encode()).hexdigest()[:32]
+
+def restaurar_sessao():
+    """Reidrata auth/admin a partir do token salvo na URL (sobrevive a F5)."""
+    if st.session_state.get("auth"):
+        return
+    qp = st.query_params
+    u, tok = qp.get("u"), qp.get("s")
+    if u and tok and st.secrets.get("users", {}).get(u) is not None:
+        if tok == _session_token(u):
+            st.session_state.update(auth=True, username=u, admin=is_admin(u))
+
 @st.dialog("Termo de Ciência — LGPD", width="large")
 def lgpd_modal():
     st.markdown("""
@@ -221,14 +273,20 @@ def login_screen():
             <div class="login-sub">Ferreira Supermercados</div>
             <hr class="login-line">
         </div>""", unsafe_allow_html=True)
-        u = st.text_input("Usuário", placeholder="seu.usuario")
-        p = st.text_input("Senha", type="password", placeholder="••••••••")
-        if st.button("Entrar →", use_container_width=True):
-            if check_credentials(u.strip(), p):
-                st.session_state.update(auth=True, username=u.strip(), admin=is_admin(u.strip()))
+        with st.form("login_form", clear_on_submit=False):
+            u = st.text_input("Usuário", placeholder="seu.usuario")
+            p = st.text_input("Senha", type="password", placeholder="••••••••")
+            entrar = st.form_submit_button("Entrar →", use_container_width=True)
+        if entrar:
+            u = u.strip()
+            if check_credentials(u, p):
+                st.session_state.update(auth=True, username=u, admin=is_admin(u))
+                st.query_params.update(u=u, s=_session_token(u))
                 st.rerun()
             else:
                 st.error("Usuário ou senha incorretos.")
+
+restaurar_sessao()
 
 if not st.session_state.get("auth"):
     login_screen()
@@ -272,11 +330,12 @@ with st.sidebar:
         {_logo_s_tag}
         <span class="sb-sub">Central de Processos e Riscos</span>
     </div>
-    <div class="sb-user"><span>👤</span><span>{{_user}}</span>{{ab}}</div>
+    <div class="sb-user"><span>👤</span><span>{_user}</span>{ab}</div>
     """, unsafe_allow_html=True)
 
     if st.button("Sair", use_container_width=True):
         [st.session_state.pop(k, None) for k in ["auth","username","admin"]]
+        st.query_params.clear()
         st.cache_data.clear(); st.rerun()
 
     with st.spinner("Carregando..."):
@@ -599,15 +658,85 @@ if _admin:
 # ════════════ ABA 4 — AUDITORIA (COM KPIs E GRÁFICOS DO HTML) ═══════════════
 with tabs[3]:
     st.markdown("""
-    <div class="admin-header">
-        <div>
-            <div class="admin-title">Dashboard de Auditorias</div>
-            <div class="admin-sub">
-                Análise de conformidade dos checklists de Açougue, Frente de Loja e Recebimento
-            </div>
-        </div>
-    </div>""", unsafe_allow_html=True)
-    
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+    :root{
+      --verde:#2E9E37;--verde-esc:#1E7A2A;--verde-tinta:#12331C;--amarelo:#F2C300;
+      --exc:#1E7A2A;--bom:#5FB65B;--aten:#E8B23A;--risco:#E67E22;--crit:#D64545;
+      --papel:#F4F7F3;--branco:#FFFFFF;--borda:#DDE6DC;--texto:#2A3A2E;--suave:#728177;
+      --sombra:0 1px 2px rgba(18,51,28,.06),0 4px 16px rgba(18,51,28,.05);
+      --disp:'Barlow Semi Condensed',system-ui,sans-serif;--corpo:'Inter',system-ui,sans-serif;
+    }
+    .aud-card{background:var(--branco);border:1px solid var(--borda);border-radius:12px;padding:18px;box-shadow:var(--sombra);margin-bottom:14px}
+    .aud-card h3{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--verde-tinta);letter-spacing:.3px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
+    .aud-kpi .rot{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--suave);font-weight:600}
+    .aud-kpi .num{font-family:var(--disp);font-size:40px;font-weight:700;line-height:1;margin:8px 0 2px;color:var(--verde-tinta)}
+    .aud-kpi .pe{font-size:12px;color:var(--suave);margin-bottom:2px}
+    .aud-kpi .faixa{height:4px;border-radius:3px;margin-top:12px;background:var(--papel);overflow:hidden}
+    .aud-kpi .faixa i{display:block;height:100%}
+    .aud-selo{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.3px;color:#fff}
+    .aud-barra{display:flex;align-items:center;gap:10px;padding:6px 0}
+    .aud-barra .nome{width:150px;font-size:12.5px;font-weight:500;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .aud-barra .trilho{flex:1;height:22px;background:var(--papel);border-radius:5px;overflow:hidden;position:relative}
+    .aud-barra .trilho i{display:block;height:100%;border-radius:5px;transition:width .6s cubic-bezier(.2,.7,.2,1)}
+    .aud-barra .val{width:52px;text-align:right;font-family:var(--disp);font-weight:700;font-size:15px}
+    .aud-heat table{width:100%;border-collapse:collapse;font-size:13px}
+    .aud-heat th{text-align:left;font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--suave);font-weight:600;padding:9px 10px;border-bottom:1px solid var(--borda)}
+    .aud-heat td{padding:10px;border-bottom:1px solid #eef3ee;vertical-align:middle}
+    .aud-heat tr:hover td{background:#fafcf9}
+    .aud-cel{width:74px;height:38px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;border-radius:5px;margin:2px}
+    .aud-degrau{display:flex;align-items:center;gap:14px;padding:12px 16px;border-radius:10px;border:1px solid var(--borda);background:#fff;position:relative;margin-bottom:6px}
+    .aud-degrau.atual{box-shadow:0 0 0 2px var(--verde);border-color:var(--verde)}
+    .aud-degrau .nn{font-family:var(--disp);font-weight:700;font-size:30px;width:40px;text-align:center;line-height:1}
+    .aud-degrau .info b{font-size:14px}
+    .aud-degrau .info .fx{font-size:11px;color:var(--suave)}
+    .aud-degrau .info p{font-size:12px;color:var(--texto);margin-top:2px}
+    .aud-degrau .tag-atual{position:absolute;right:14px;top:14px;font-size:11px;font-weight:700;color:var(--verde-esc);background:#eafaec;padding:3px 10px;border-radius:20px}
+    .aud-aviso{background:#fff8e6;border:1px solid #f0dca0;border-left:4px solid var(--amarelo);border-radius:8px;padding:11px 14px;font-size:13px;margin:12px 0;display:flex;gap:10px}
+    .aud-aviso.grave{background:#fdeeee;border-color:#eebcbc;border-left-color:var(--crit)}
+    .aud-aviso.ok{background:#effaf0;border-color:#bfe6c2;border-left-color:var(--exc)}
+    .aud-anel{position:relative;width:96px;height:96px;flex-shrink:0}
+    .aud-anel .txt{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+    .aud-anel .txt b{font-family:var(--disp);font-size:26px;font-weight:700;line-height:1;color:var(--verde-tinta)}
+    .aud-anel .txt small{font-size:9px;letter-spacing:.5px;text-transform:uppercase;color:var(--suave)}
+    .aud-tema{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #eef3ee}
+    .aud-tema .tt{flex:1}
+    .aud-tema .tt b{font-size:13.5px}
+    .aud-tema .tt .lj{font-size:11.5px;color:var(--suave);margin-top:2px}
+    .aud-tema .cnt{font-family:var(--disp);font-weight:700;font-size:26px;line-height:1;width:44px;text-align:center}
+    .aud-tema .cnt small{display:block;font-size:9px;letter-spacing:.5px;color:var(--suave);text-transform:uppercase;font-weight:600}
+    .aud-insight{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid #eef3ee;font-size:13.5px}
+    .aud-insight .mk{font-size:18px;flex-shrink:0;line-height:1.2}
+    .aud-cod{font-family:var(--disp);font-weight:700;color:var(--verde-esc);font-size:15px}
+
+    /* ── Cabeçalho de seção (padrão .cab do HTML de referência) ── */
+    .aud-cab{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;
+        padding-bottom:12px;border-bottom:1px solid var(--borda)}
+    .aud-cab h1{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--verde-tinta);line-height:1.15;letter-spacing:.2px;margin:0}
+    .aud-cab h1 .ic{margin-right:8px}
+    .aud-cab .desc{color:var(--suave);font-size:13px;margin-top:6px;max-width:660px}
+
+    /* ── Tag genérica (chip de contexto) ── */
+    .aud-tag{display:inline-block;padding:1px 8px;border-radius:5px;font-size:11px;font-weight:600;
+        border:1px solid var(--borda);background:var(--papel);color:var(--suave)}
+
+    /* ── Vínculo com POP ── */
+    .pop-vinculo{font-size:12px;color:var(--verde-esc);background:rgba(46,158,55,.10);
+        border:1px solid rgba(46,158,55,.30);border-radius:6px;padding:3px 9px;display:inline-block;font-weight:600}
+    .pop-vinculo.faltando{background:rgba(214,69,69,.12);border-color:rgba(214,69,69,.40);color:var(--crit)}
+    </style>
+    """, unsafe_allow_html=True)
+
+    def cab_html(titulo: str, desc: str = "", icone: str = "") -> str:
+        """Cabeçalho de seção padronizado (replica o bloco .cab do HTML de
+        referência) — usar no topo de cada sub-aba de Auditoria no lugar de
+        st.markdown("### ...") + st.caption(...) soltos."""
+        ic = f'<span class="ic">{icone}</span>' if icone else ''
+        desc_html = f'<div class="desc">{desc}</div>' if desc else ''
+        return (
+            f'<div class="aud-cab"><div><h1>{ic}{titulo}</h1>{desc_html}</div></div>'
+        )
+
     # ── Configurações ──
     LOJAS = [
         ['01','Irmã Dulce'], ['02','Lourival Parente'], ['03','Porto Alegre'],
@@ -675,7 +804,31 @@ with tabs[3]:
     def tags_de(texto):
         texto_lower = texto.lower()
         return [t['tag'] for t in TEMAS if any(k in texto_lower for k in t['kw'])]
-    
+
+    # ── PONTO DO POP CITADO NO ITEM DO CHECKLIST ──
+    # O POP em si é um só por checklist (ver FRENTE_POP_BASE em db.py) — o que varia
+    # de item para item é o ponto interno avaliado. Os padrões abaixo extraem esse
+    # ponto do enunciado ("ANEXO 113", "Seção VII", "p.14-15", "etapa 1 do POP").
+    PADROES_PONTO_POP = [
+        re.compile(r'ANEXO\s+[IVXLC]+\b|ANEXO\s+\d+', re.IGNORECASE),
+        re.compile(r'Se[çc][ãa]o\s+[IVXLC]+\b', re.IGNORECASE),
+        re.compile(r'etapas?\s+\d+(?:\s*[-–a]\s*\d+)?\s+do\s+POP', re.IGNORECASE),
+        re.compile(r'POP\s+(?:de\s+|do\s+|da\s+)?[A-ZÀ-Ú][\wÀ-ú]*(?:\s+[a-zà-úA-ZÀ-Ú][\wÀ-ú]*){0,2}'),
+        re.compile(r'\bp\.\s*\d+(?:\s*-\s*\d+)?', re.IGNORECASE),
+    ]
+
+    def detectar_pontos_pop(texto: str) -> list:
+        """Trechos do item que apontam o ponto do POP, na ordem em que aparecem."""
+        achados, vistos = [], set()
+        for padrao in PADROES_PONTO_POP:
+            for m in padrao.finditer(texto or ''):
+                trecho = re.sub(r'\s+', ' ', m.group()).strip()
+                chave = trecho.lower()
+                if trecho and chave not in vistos:
+                    vistos.add(chave)
+                    achados.append(trecho)
+        return achados
+
     # ── DADOS REAIS DO SUPABASE ──
     @st.cache_data(ttl=5, show_spinner=False)  # <-- TTL de 5 segundos
     def carregar_dados_exemplo():
@@ -690,7 +843,36 @@ with tabs[3]:
             return pd.DataFrame()
 
     df_auditorias = carregar_dados_exemplo()
-    
+
+    def vencida(nc: dict) -> bool:
+        """True se a NC tem prazo definido, ainda não foi concluída e o prazo já passou."""
+        from datetime import datetime as _dt
+        prazo = (nc.get('prazo') or '').strip()
+        if not prazo or nc.get('status') == 'Concluída':
+            return False
+        return prazo < _dt.now().strftime('%Y-%m-%d')
+
+    def todas_ncs(df: pd.DataFrame) -> list:
+        """Achata as auditorias em uma lista de NCs (uma entrada por crítica),
+        cada uma carregando o contexto da auditoria de origem (id, loja, tipo, data)
+        para permitir filtros, agregações e edição (via atualizar_auditoria)."""
+        ncs = []
+        if df.empty or 'criticas' not in df.columns:
+            return ncs
+        for _, row in df.iterrows():
+            criticas = row.get('criticas')
+            if not isinstance(criticas, list):
+                continue
+            for idx, c in enumerate(criticas):
+                nc = normalizar_critica(c)
+                nc['_auditoria_id'] = row.get('id')
+                nc['_idx'] = idx
+                nc['_loja'] = row.get('loja')
+                nc['_tipo'] = row.get('tipo')
+                nc['_data'] = row.get('data')
+                ncs.append(nc)
+        return ncs
+
     def calcular_metricas(df):
         """Calcula todas as métricas do painel"""
         # ── VERIFICA SE O DATAFRAME ESTÁ VAZIO ──
@@ -778,9 +960,9 @@ with tabs[3]:
         for criticas in df['criticas']:
             if isinstance(criticas, list):
                 for c in criticas:
-                    tags = tags_de(c)
+                    tags = tags_de(normalizar_critica(c)['texto'])
                     todas_tags.extend(tags)
-        
+
         if todas_tags:
             from collections import Counter
             freq = Counter(todas_tags)
@@ -819,8 +1001,8 @@ with tabs[3]:
         for criticas in df['criticas']:
             if isinstance(criticas, list):
                 for c in criticas:
-                    todas_tags.extend(tags_de(c))
-        
+                    todas_tags.extend(tags_de(normalizar_critica(c)['texto']))
+
         if todas_tags:
             from collections import Counter
             freq_tags = Counter(todas_tags)
@@ -830,31 +1012,102 @@ with tabs[3]:
                 for _, row in df.iterrows():
                     if isinstance(row['criticas'], list):
                         for c in row['criticas']:
-                            if top[0] in tags_de(c):
+                            if top[0] in tags_de(normalizar_critica(c)['texto']):
                                 lojas_com_top.add(row['loja'])
                 insights.append(f"↻ A não conformidade que **mais se repete** é '{top[0]}', presente em {len(lojas_com_top)} loja(s)")
         
         return insights
-    
+
+    def classificar_causa_raiz(tema: str) -> str:
+        """Agrupa o tema da não conformidade em uma categoria de causa raiz."""
+        t = tema.lower()
+        if any(k in t for k in ['painel', 'anexo', 'gestão visual', 'visual']):
+            return 'Gestão Visual & Padronização'
+        if any(k in t for k in ['plano de ação', 'informal', 'indicador', 'kpi', 'monitorado']):
+            return 'Gestão & Indicadores'
+        if any(k in t for k in ['pop', 'procedimento', 'afixado']):
+            return 'Cumprimento de POP'
+        if any(k in t for k in ['praga', 'estrutura', 'deteriorada', 'infiltra', 'mofo', 'ralo']):
+            return 'Estrutura & Manutenção'
+        if any(k in t for k in ['temperatura', 'manual', 'frágil', 'equipamento']):
+            return 'Controle de Processo / Equipamento'
+        if any(k in t for k in ['reunião', 'alinhamento']):
+            return 'Rotina de Gestão'
+        if any(k in t for k in ['integração', 'reciclagem', 'equipe', 'treinamento']):
+            return 'Capacitação de Pessoas'
+        if any(k in t for k in ['falha', 'caixa']):
+            return 'Execução Operacional'
+        return 'Outros'
+
+    def calcular_ranking_risco_lojas(df_filtrada):
+        """Ranking de lojas por risco real, calculado pela escala oficial de Níveis 0 a 5.
+        Nível 0 = Prática ausente (peso máximo: 5 pts) até Nível 5 = Excelência (0 pts)."""
+
+        pesos = {
+            'Nível 0': 5,  # Prática completamente ausente - peso máximo
+            'Nível 1': 4,  # Iniciativa sem formalização
+            'Nível 2': 3,  # Processo incompleto/inconsistente
+            'Nível 3': 2,  # Processo com desvios frequentes
+            'Nível 4': 1,  # Executado com falhas mínimas
+            'Nível 5': 0   # Excelência - zero risco
+        }
+        risco = {}
+
+        for _, row in df_filtrada.iterrows():
+            loja = str(row['loja'])
+            if loja not in risco:
+                risco[loja] = {'score_risco': 0, 'total_criticas': 0, 'auditorias': 0, 'notas': []}
+
+            risco[loja]['auditorias'] += 1
+            risco[loja]['notas'].append(row['total'])
+
+            if isinstance(row['criticas'], list):
+                for c in row['criticas']:
+                    texto_c = normalizar_critica(c)['texto']
+                    risco[loja]['total_criticas'] += 1
+                    peso_aplicado = 2  # Peso padrão (Nível 3) caso não identifique
+                    for nivel_str, peso in pesos.items():
+                        if nivel_str in texto_c:
+                            peso_aplicado = peso
+                            break
+                    risco[loja]['score_risco'] += peso_aplicado
+
+        ranking = []
+        for loja, d in risco.items():
+            ranking.append({
+                'loja': loja,
+                'score_risco': d['score_risco'],
+                'total_criticas': d['total_criticas'],
+                'auditorias': d['auditorias'],
+                'nota_media': sum(d['notas']) / len(d['notas']),
+            })
+
+        return sorted(ranking, key=lambda x: -x['score_risco'])
+
     # ── SUB-ABAS ──
     sub_tabs = st.tabs([
-        "📊 Painel geral", 
-        "◎ Análise por loja", 
+        "▩ Painel geral",
+        "◎ Análise por loja",
         "▲ Mapa de maturidade",
         "✦ Reincidências & insights",
         "≡ Rankings",
         "▦ Mapa de risco",
         "⭳ Importar PDF",
         "＋ Lançar manual",
-        "☰ Histórico"
+        "✕ Não conformidades",
+        "☰ Histórico",
+        "⛁ Dados & exportação"
     ])
     
        # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 1 - PAINEL GERAL (COM KPIs DO HTML)
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[0]:
-        st.markdown("### 📊 Painel geral da rede")
-        st.caption("Consolidação das auditorias internas de Açougue, Frente de Loja e Recebimento.")
+        st.markdown(cab_html(
+            "Painel geral da rede",
+            "Consolidação das auditorias internas de Açougue, Frente de Loja e Recebimento.",
+            "▩",
+        ), unsafe_allow_html=True)
         
         # ── VERIFICA SE HÁ DADOS ──
         if df_auditorias.empty:
@@ -862,164 +1115,190 @@ with tabs[3]:
         else:
             # ── KPIs ──
             metricas = calcular_metricas(df_auditorias)
-            
+            ncs_rede = todas_ncs(df_auditorias)
+            ncs_abertas = [n for n in ncs_rede if n.get('status') != 'Concluída']
+            ncs_vencidas = [n for n in ncs_abertas if vencida(n)]
+            ncs_sem_pop = [n for n in ncs_abertas if not (n.get('pop_nome') or '').strip()]
+
+            if ncs_sem_pop:
+                st.markdown(f"""
+                <div style="background:#fdeeee;border:1px solid #eebcbc;border-left:4px solid #D64545;
+                    border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:14px;display:flex;gap:10px;">
+                    <span>⚑</span>
+                    <div><b>{len(ncs_sem_pop)} não conformidade(s) sem rastreio ao POP.</b>
+                    Toda NC deveria indicar o documento e o ponto exato do POP divergente.
+                    Veja a aba <b>Não conformidades</b> para regularizar.</div>
+                </div>
+                """, unsafe_allow_html=True)
+
             col1, col2, col3, col4 = st.columns(4)
-            
+
             with col1:
                 f = faixa(metricas['nota_rede'])
                 st.markdown(f"""
-                <div style="background:white;border:1px solid #DDE6DC;border-radius:12px;padding:16px;">
-                    <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#728177;font-weight:600;">Nota média da rede</div>
-                    <div style="font-family:'Barlow Semi Condensed',sans-serif;font-size:40px;font-weight:700;line-height:1;margin:8px 0 2px;color:#12331C;">
-                        {metricas['nota_rede']:.1f}
-                    </div>
-                    <div style="font-size:12px;color:#728177;">
-                        <span style="background:{f['cor']};color:white;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;">
-                            {f['rot']}
-                        </span>
-                    </div>
-                    <div style="height:4px;border-radius:3px;margin-top:12px;background:#F4F7F3;overflow:hidden;">
-                        <div style="width:{min(100, metricas['nota_rede'])}%;height:100%;background:{f['cor']};border-radius:3px;"></div>
-                    </div>
+                <div class="aud-card aud-kpi">
+                    <div class="rot">Nota média da rede</div>
+                    <div class="num">{metricas['nota_rede']:.2f}</div>
+                    <div class="pe"><span class="aud-selo" style="background:{f['cor']}">{f['rot']}</span></div>
+                    <div class="faixa"><i style="width:{min(100, metricas['nota_rede'])}%;background:{f['cor']}"></i></div>
                 </div>
                 """, unsafe_allow_html=True)
-            
+
             with col2:
-                nivel = nivel_maturidade(metricas['nota_rede'])
+                pct_lojas = 100 * metricas['lojas'] / max(1, len(LOJAS))
                 st.markdown(f"""
-                <div style="background:white;border:1px solid #DDE6DC;border-radius:12px;padding:16px;">
-                    <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#728177;font-weight:600;">Nível de maturidade</div>
-                    <div style="font-family:'Barlow Semi Condensed',sans-serif;font-size:40px;font-weight:700;line-height:1;margin:8px 0 2px;color:#12331C;">
-                        N{nivel}
-                    </div>
-                    <div style="font-size:15px;color:#728177;">
-                        {NIVEIS[nivel]['rot']}
-                    </div>
+                <div class="aud-card aud-kpi">
+                    <div class="rot">Lojas auditadas</div>
+                    <div class="num">{metricas['lojas']} <small style="font-size:16px;color:#728177;font-family:Inter,sans-serif">de {len(LOJAS)}</small></div>
+                    <div class="pe">{len(df_auditorias)} auditorias no histórico</div>
+                    <div class="faixa"><i style="width:{pct_lojas:.1f}%;background:#2E9E37"></i></div>
                 </div>
                 """, unsafe_allow_html=True)
-            
+
             with col3:
+                cor_ab = '#D64545' if ncs_abertas else '#1E7A2A'
+                pct_ab = 100 if ncs_abertas else 100
                 st.markdown(f"""
-                <div style="background:white;border:1px solid #DDE6DC;border-radius:12px;padding:16px;">
-                    <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#728177;font-weight:600;">Lojas auditadas</div>
-                    <div style="font-family:'Barlow Semi Condensed',sans-serif;font-size:40px;font-weight:700;line-height:1;margin:8px 0 2px;color:#12331C;">
-                        {metricas['lojas']}
-                    </div>
-                    <div style="font-size:16px;color:#728177;">
-                        de {len(LOJAS)} lojas
-                    </div>
+                <div class="aud-card aud-kpi">
+                    <div class="rot">Não conformidades em aberto</div>
+                    <div class="num">{len(ncs_abertas)}</div>
+                    <div class="pe">{len(ncs_vencidas)} com prazo vencido</div>
+                    <div class="faixa"><i style="width:{pct_ab}%;background:{cor_ab}"></i></div>
                 </div>
                 """, unsafe_allow_html=True)
-            
+
             with col4:
-                cor_criticas = '#D64545' if metricas['total_criticas'] > 5 else '#1E7A2A'
+                cor_sp = '#D64545' if ncs_sem_pop else '#1E7A2A'
                 st.markdown(f"""
-                <div style="background:white;border:1px solid #DDE6DC;border-radius:12px;padding:16px;">
-                    <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#728177;font-weight:600;">Não conformidades críticas</div>
-                    <div style="font-family:'Barlow Semi Condensed',sans-serif;font-size:40px;font-weight:700;line-height:1;margin:8px 0 2px;color:#12331C;">
-                        {metricas['total_criticas']}
-                    </div>
-                    <div style="font-size:12px;color:#728177;">
-                        <span style="background:{cor_criticas};color:white;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;">
-                            {'Atenção' if metricas['total_criticas'] > 5 else 'Ok'}
-                        </span>
-                    </div>
+                <div class="aud-card aud-kpi">
+                    <div class="rot">NCs sem rastreio ao POP</div>
+                    <div class="num">{len(ncs_sem_pop)}</div>
+                    <div class="pe">{'Regularizar a referência' if ncs_sem_pop else 'Todas rastreadas'}</div>
+                    <div class="faixa"><i style="width:100%;background:{cor_sp}"></i></div>
                 </div>
                 """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # ── RANKING DAS LOJAS (BARRA) ──
-            st.markdown("### 🏆 Ranking das lojas")
-            st.caption("Média das frentes por loja")
-            
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── RANKING DAS LOJAS E DESEMPENHO POR PROCESSO (2 colunas) ──
+            col_rank, col_proc = st.columns(2)
+
             ranking_loja, _ = calcular_rankings(df_auditorias)
-            
-            for loja, nota in ranking_loja.items():
-                f = faixa(nota)
-                nome_loja = dict(LOJAS).get(loja, loja)
-                pct = min(100, nota)
-                st.markdown(f"""
-                <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
-                    <div style="width:150px;font-size:12.5px;font-weight:500;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                        <span style="font-weight:700;color:#1E7A2A;font-size:15px;">{loja}</span> {nome_loja}
-                    </div>
-                    <div style="flex:1;height:22px;background:#F4F7F3;border-radius:5px;overflow:hidden;position:relative;">
-                        <div style="display:block;height:100%;width:{pct}%;background:{f['cor']};border-radius:5px;transition:width 0.6s;"></div>
-                    </div>
-                    <div style="width:52px;text-align:right;font-family:'Barlow Semi Condensed',sans-serif;font-weight:700;font-size:15px;color:{f['cor']};">
-                        {nota:.1f}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            # ── GRÁFICOS ──
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 📊 Desempenho por processo")
-                
+            frentes_por_loja = df_auditorias.groupby('loja')['tipo'].nunique().to_dict()
+            n_frentes_total = len(CHECKLISTS)
+
+            with col_rank:
+                st.markdown('<div class="aud-card"><h3>Ranking das lojas <span style="font-size:11px;color:#728177;font-weight:500">média das frentes</span></h3>', unsafe_allow_html=True)
+                html_rank = ""
+                for loja, nota in ranking_loja.items():
+                    f = faixa(nota)
+                    nome_loja = dict(LOJAS).get(loja, loja)
+                    n_frentes = frentes_por_loja.get(loja, 0)
+                    sufixo_cob = f" ({n_frentes} de {n_frentes_total} frentes)" if n_frentes < n_frentes_total else ""
+                    html_rank += f"""<div class="aud-barra">
+                        <div class="nome"><span class="aud-cod" style="font-size:12px">{loja}</span> {nome_loja}{sufixo_cob}</div>
+                        <div class="trilho"><i style="width:{min(100,nota)}%;background:{f['cor']}"></i></div>
+                        <div class="val" style="color:{f['cor']}">{nota:.2f}</div>
+                    </div>"""
+                st.markdown(html_rank + '</div>', unsafe_allow_html=True)
+
+            with col_proc:
                 notas_tipo = df_auditorias.groupby('tipo')['total'].mean()
-                
+                topicos_medias = []
+                for i, nome in enumerate(SLOTS_CURTOS):
+                    pcts_t = []
+                    for _, row in df_auditorias.iterrows():
+                        if isinstance(row['topicos'], list) and len(row['topicos']) > i:
+                            pcts_t.append(row['topicos'][i].get('pct', 0))
+                    if pcts_t:
+                        topicos_medias.append({'topico': nome, 'media': sum(pcts_t)/len(pcts_t), 'peso': POSSIVEL[i]})
+
+                st.markdown('<div class="aud-card"><h3>Desempenho por processo</h3>', unsafe_allow_html=True)
+                html_proc = ""
                 for tipo, nota in notas_tipo.items():
                     f = faixa(nota)
                     nome = CHECKLISTS[tipo]['nome']
-                    pct = min(100, nota)
-                    st.markdown(f"""
-                    <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
-                        <div style="width:150px;font-size:12.5px;font-weight:500;flex-shrink:0;">{nome}</div>
-                        <div style="flex:1;height:22px;background:#F4F7F3;border-radius:5px;overflow:hidden;position:relative;">
-                            <div style="display:block;height:100%;width:{pct}%;background:{f['cor']};border-radius:5px;"></div>
-                        </div>
-                        <div style="width:52px;text-align:right;font-weight:700;font-size:15px;color:{f['cor']};">
-                            {nota:.1f}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown("### 📊 Desempenho por tópico")
-                
-                topicos_medias = []
-                for i, nome in enumerate(SLOTS_CURTOS):
-                    pcts = []
-                    for _, row in df_auditorias.iterrows():
-                        if isinstance(row['topicos'], list) and len(row['topicos']) > i:
-                            pcts.append(row['topicos'][i].get('pct', 0))
-                    if pcts:
-                        topicos_medias.append({'topico': nome, 'media': sum(pcts)/len(pcts)})
-                
+                    html_proc += f"""<div class="aud-barra">
+                        <div class="nome">{nome}</div>
+                        <div class="trilho"><i style="width:{min(100,nota)}%;background:{f['cor']}"></i></div>
+                        <div class="val" style="color:{f['cor']}">{nota:.2f}</div>
+                    </div>"""
+                html_proc += '<h3 style="margin-top:22px">Score por bloco do checklist <span style="font-size:11px;color:#728177;font-weight:500">toda a rede</span></h3>'
                 for item in topicos_medias:
                     f = faixa(item['media'])
-                    pct = min(100, item['media'])
-                    st.markdown(f"""
-                    <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
-                        <div style="width:150px;font-size:12.5px;font-weight:500;flex-shrink:0;">{item['topico']}</div>
-                        <div style="flex:1;height:22px;background:#F4F7F3;border-radius:5px;overflow:hidden;position:relative;">
-                            <div style="display:block;height:100%;width:{pct}%;background:{f['cor']};border-radius:5px;"></div>
-                        </div>
-                        <div style="width:52px;text-align:right;font-weight:700;font-size:15px;color:{f['cor']};">
-                            {item['media']:.1f}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
+                    html_proc += f"""<div class="aud-barra">
+                        <div class="nome">{item['topico']} <span style="color:#728177;font-weight:400">(peso {item['peso']}%)</span></div>
+                        <div class="trilho"><i style="width:{min(100,item['media'])}%;background:{f['cor']}"></i></div>
+                        <div class="val" style="color:{f['cor']}">{item['media']:.2f}</div>
+                    </div>"""
+                st.markdown(html_proc + '</div>', unsafe_allow_html=True)
+
+            # ── GAPS RECORRENTES NA REDE (PARETO) ──
+            st.markdown('<div class="aud-card" style="margin-top:16px"><h3>Gaps recorrentes na rede <span style="font-size:11px;color:#728177;font-weight:500">não conformidades agrupadas pelo item do checklist</span></h3>', unsafe_allow_html=True)
+            grupos = {}
+            for n in ncs_abertas:
+                chave = (n.get('codigo_item') or '').strip() or (n.get('texto') or '')[:80] or 'Item não informado'
+                if chave not in grupos:
+                    grupos[chave] = {
+                        'n': 0, 'lojas': set(), 'tipos': set(), 'pops': set(),
+                        'texto': n.get('texto') or chave,
+                    }
+                grupos[chave]['n'] += 1
+                grupos[chave]['lojas'].add(n.get('_loja'))
+                grupos[chave]['tipos'].add(n.get('_tipo'))
+                grupos[chave]['pops'].add(n.get('pop_nome') or '—')
+
+            if not grupos:
+                st.markdown('<div style="text-align:center;padding:26px;color:#728177">Nenhuma não conformidade em aberto.</div></div>', unsafe_allow_html=True)
+            else:
+                top = sorted(grupos.items(), key=lambda kv: -kv[1]['n'])[:8]
+                max_n = top[0][1]['n']
+                linhas = ""
+                for chave, g in top:
+                    frentes_txt = ', '.join(CHECKLISTS.get(t, {}).get('nome', t) for t in g['tipos'])
+                    pops_txt = ' · '.join(p for p in g['pops'] if p and p != '—') or '—'
+                    lojas_txt = ' '.join(f'<span class="aud-cod" style="font-size:12px">{l}</span>' for l in sorted(g['lojas']))
+                    largura = 100 * g['n'] / max_n
+                    linhas += f"""<tr>
+                        <td style="font-weight:500">{g['texto'][:90]}</td>
+                        <td><span class="aud-tag">{frentes_txt}</span></td>
+                        <td style="font-size:12px;color:#728177">{pops_txt}</td>
+                        <td style="text-align:center">{lojas_txt}</td>
+                        <td><div style="display:flex;align-items:center;gap:8px">
+                            <div style="flex:1;height:18px;background:#F4F7F3;border-radius:5px;overflow:hidden">
+                            <span style="display:block;height:100%;width:{largura}%;background:#D64545"></span></div>
+                            <span style="font-family:'Barlow Semi Condensed',sans-serif;font-weight:700">{g['n']}</span></div></td>
+                    </tr>"""
+                st.markdown(f"""
+                <table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr>
+                    <th style="text-align:left;padding:9px 10px;border-bottom:1px solid #DDE6DC;font-size:11.5px;color:#728177">Item do checklist</th>
+                    <th style="text-align:left;padding:9px 10px;border-bottom:1px solid #DDE6DC;font-size:11.5px;color:#728177">Frente</th>
+                    <th style="text-align:left;padding:9px 10px;border-bottom:1px solid #DDE6DC;font-size:11.5px;color:#728177">Documento de referência</th>
+                    <th style="text-align:center;padding:9px 10px;border-bottom:1px solid #DDE6DC;font-size:11.5px;color:#728177">Lojas</th>
+                    <th style="text-align:left;padding:9px 10px;border-bottom:1px solid #DDE6DC;font-size:11.5px;color:#728177;width:160px">Ocorrências</th>
+                </tr></thead>
+                <tbody>{linhas}</tbody></table>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
             # ── EXPORTAR ──
             csv_data = df_auditorias.to_csv(index=False, sep=';')
-            st.download_button("📊 Exportar CSV", data=csv_data, 
+            st.download_button("📊 Exportar CSV", data=csv_data,
                 file_name=f"auditorias_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv", use_container_width=True)
-    
+                mime="text/csv", use_container_width=True, key="export_csv_painel_geral")
+
        # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 2 - ANÁLISE POR LOJA
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[1]:
-        st.markdown("### ◎ Análise por loja")
-        st.caption("Card central compilado a partir do Resumo dos Tópicos de cada frente. Compara a loja com a média da rede e destaca fortalezas e fragilidades.")
+        st.markdown(cab_html(
+            "Análise por loja",
+            "Card central compilado a partir do Resumo dos Tópicos de cada frente. Compara a loja com a média da rede e destaca fortalezas e fragilidades.",
+            "◎",
+        ), unsafe_allow_html=True)
         
         # ── VERIFICA SE HÁ DADOS ──
         if df_auditorias.empty:
@@ -1189,8 +1468,8 @@ with tabs[3]:
                 st.markdown("---")
                 
                 # ── LEITURA RÁPIDA ──
-                st.markdown("### 📋 Leitura rápida")
-                
+                st.markdown('<div class="aud-card"><h3>📋 Leitura rápida</h3>', unsafe_allow_html=True)
+
                 if loja_medias:
                     i_melhor = loja_medias.index(max(loja_medias))
                     i_pior = loja_medias.index(min(loja_medias))
@@ -1237,40 +1516,66 @@ with tabs[3]:
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
-                
-                st.markdown("---")
-                
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
                 # ── NÃO CONFORMIDADES ──
-                st.markdown("### ⚠️ Não conformidades registradas")
-                
-                criticas_loja = []
-                for _, row in df_loja.iterrows():
-                    if isinstance(row['criticas'], list):
-                        for c in row['criticas']:
-                            criticas_loja.append({'tipo': row['tipo'], 'texto': c})
-                
-                if criticas_loja:
-                    df_criticas = pd.DataFrame(criticas_loja)
-                    df_criticas['Frente'] = df_criticas['tipo'].apply(
-                        lambda x: CHECKLISTS.get(x, {}).get('nome', x)
-                    )
-                    df_criticas['Não conformidade'] = df_criticas['texto']
-                    
+                # (sem wrapper .aud-card: st.dataframe é renderizado pelo Streamlit fora
+                # da hierarquia HTML de uma div aberta via unsafe_allow_html, então o
+                # card ficaria vazio e o conteúdo "vazaria" para fora dele)
+                ncs_loja_todas = [n for n in todas_ncs(df_loja)]
+                ncs_loja_abertas = [n for n in ncs_loja_todas if n.get('status') != 'Concluída']
+                st.markdown(f"### ⚠️ Situação das não conformidades "
+                            f"<span style='font-size:13px;color:#728177;font-weight:400'>"
+                            f"{len(ncs_loja_abertas)} em aberto de {len(ncs_loja_todas)}</span>",
+                            unsafe_allow_html=True)
+
+                if ncs_loja_todas:
+                    linhas_nc = []
+                    for nc in ncs_loja_todas:
+                        frente = CHECKLISTS.get(nc.get('_tipo'), {}).get('nome', nc.get('_tipo'))
+                        pop = nc.get('pop_nome') or '— sem vínculo —'
+                        if nc.get('pop_codigo_2'):
+                            pop = f"{nc['pop_codigo_2']} — {pop}"
+                        atrasada = vencida(nc)
+                        prazo_txt = nc.get('prazo') or '—'
+                        if atrasada:
+                            prazo_txt = f"⚠ {prazo_txt}"
+                        linhas_nc.append({
+                            'Frente': frente,
+                            'Não conformidade': nc.get('texto') or '',
+                            'POP vinculado': pop,
+                            'Status': nc.get('status') or 'Aberta',
+                            'Prazo': prazo_txt,
+                        })
+
+                    df_criticas = pd.DataFrame(linhas_nc)
+                    sem_vinculo = int((df_criticas['POP vinculado'] == '— sem vínculo —').sum())
+                    if sem_vinculo:
+                        st.warning(
+                            f"{sem_vinculo} de {len(df_criticas)} não conformidade(s) sem POP "
+                            "de referência. Vincule na importação do PDF ou no lançamento manual."
+                        )
+
                     st.dataframe(
-                        df_criticas[['Frente', 'Não conformidade']],
+                        df_criticas[['Frente', 'Não conformidade', 'POP vinculado', 'Status', 'Prazo']],
                         column_config={
                             'Frente': st.column_config.Column('Frente', width='small'),
                             'Não conformidade': st.column_config.Column('Não conformidade'),
+                            'POP vinculado': st.column_config.Column('POP vinculado', width='medium'),
+                            'Status': st.column_config.Column('Status', width='small'),
+                            'Prazo': st.column_config.Column('Prazo', width='small'),
                         },
                         hide_index=True,
                         use_container_width=True
                     )
+                    st.caption("Para editar status, responsável, prazo ou ação corretiva de uma NC, use a aba **Não conformidades**.")
                 else:
-                    st.info("Nenhuma não conformidade crítica registrada.")
-                
+                    st.info("Nenhuma não conformidade crítica registrada nesta unidade.")
+
                 st.markdown("---")
-                
-                # ── EVOLUÇÃO ──
+
+                # ── EVOLUÇÃO ── (sem .aud-card: st.line_chart quebra dentro de div manual)
                 st.markdown("### 📈 Evolução no tempo")
                 
                 df_evolucao = df_loja.sort_values('data')
@@ -1287,15 +1592,19 @@ with tabs[3]:
                             'Frente': CHECKLISTS.get(row['tipo'], {}).get('nome', row['tipo']),
                             'tipo': row['tipo']
                         })
-                    
+
                     if evol_data:
                         df_evol = pd.DataFrame(evol_data)
-                        
-                        st.line_chart(
-                            df_evol.set_index('Data')[['Nota']],
-                            color='#1E7A2A'
+
+                        # Uma coluna por frente (paridade com o gráfico do HTML, que traça
+                        # uma linha colorida por frente em vez de uma média agregada única).
+                        df_pivot = df_evol.pivot_table(
+                            index='Data', columns='Frente', values='Nota', aggfunc='mean'
                         )
-                        
+                        cores_frentes = [CHECKLISTS.get(t, {}).get('cor', '#728177')
+                                          for t in CHECKLISTS if CHECKLISTS[t]['nome'] in df_pivot.columns]
+                        st.line_chart(df_pivot, color=cores_frentes or None)
+
                         st.markdown("**Detalhamento por auditoria**")
                         for _, row in df_evol.iterrows():
                             cor = CHECKLISTS.get(row['tipo'], {}).get('cor', '#728177')
@@ -1308,13 +1617,16 @@ with tabs[3]:
                             """, unsafe_allow_html=True)
                 else:
                     st.info("Apenas um ciclo registrado. A série aparece quando você lançar a próxima auditoria desta loja.")
-    
+
         # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 3 - MAPA DE MATURIDADE
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[2]:
-        st.markdown("### ▲ Mapa de maturidade")
-        st.caption("Diagnóstico do nível de maturidade da rede a partir das auditorias aplicadas.")
+        st.markdown(cab_html(
+            "Mapa de maturidade",
+            "Diagnóstico do nível de maturidade da rede a partir das auditorias aplicadas.",
+            "▲",
+        ), unsafe_allow_html=True)
         
         # ── VERIFICA SE HÁ DADOS ──
         if df_auditorias.empty:
@@ -1429,395 +1741,331 @@ with tabs[3]:
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
-                        
-    
-       # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 4 - REINCIDÊNCIAS & INSIGHTS
-    # ═══════════════════════════════════════════════════════════════════
-
-def classificar_causa_raiz(tema: str) -> str:
-    """Agrupa o tema da não conformidade em uma categoria de causa raiz."""
-    t = tema.lower()
-    if any(k in t for k in ['painel', 'anexo', 'gestão visual', 'visual']):
-        return 'Gestão Visual & Padronização'
-    if any(k in t for k in ['plano de ação', 'informal', 'indicador', 'kpi', 'monitorado']):
-        return 'Gestão & Indicadores'
-    if any(k in t for k in ['pop', 'procedimento', 'afixado']):
-        return 'Cumprimento de POP'
-    if any(k in t for k in ['praga', 'estrutura', 'deteriorada', 'infiltra', 'mofo', 'ralo']):
-        return 'Estrutura & Manutenção'
-    if any(k in t for k in ['temperatura', 'manual', 'frágil', 'equipamento']):
-        return 'Controle de Processo / Equipamento'
-    if any(k in t for k in ['reunião', 'alinhamento']):
-        return 'Rotina de Gestão'
-    if any(k in t for k in ['integração', 'reciclagem', 'equipe', 'treinamento']):
-        return 'Capacitação de Pessoas'
-    if any(k in t for k in ['falha', 'caixa']):
-        return 'Execução Operacional'
-    return 'Outros'
-
-
-def calcular_ranking_risco_lojas(df_filtrada):
-    """Ranking de lojas por risco real, calculado pela escala oficial de Níveis 0 a 5.
-    Nível 0 = Prática ausente (peso máximo: 5 pts) até Nível 5 = Excelência (0 pts)."""
-    
-    pesos = {
-        'Nível 0': 5,  # Prática completamente ausente - peso máximo
-        'Nível 1': 4,  # Iniciativa sem formalização
-        'Nível 2': 3,  # Processo incompleto/inconsistente
-        'Nível 3': 2,  # Processo com desvios frequentes
-        'Nível 4': 1,  # Executado com falhas mínimas
-        'Nível 5': 0   # Excelência - zero risco
-    }
-    risco = {}
-
-    for _, row in df_filtrada.iterrows():
-        loja = str(row['loja'])
-        if loja not in risco:
-            risco[loja] = {'score_risco': 0, 'total_criticas': 0, 'auditorias': 0, 'notas': []}
-
-        risco[loja]['auditorias'] += 1
-        risco[loja]['notas'].append(row['total'])
-
-        if isinstance(row['criticas'], list):
-            for c in row['criticas']:
-                risco[loja]['total_criticas'] += 1
-                peso_aplicado = 2  # Peso padrão (Nível 3) caso não identifique
-                for nivel_str, peso in pesos.items():
-                    if nivel_str in c:
-                        peso_aplicado = peso
-                        break
-                risco[loja]['score_risco'] += peso_aplicado
-
-    ranking = []
-    for loja, d in risco.items():
-        ranking.append({
-            'loja': loja,
-            'score_risco': d['score_risco'],
-            'total_criticas': d['total_criticas'],
-            'auditorias': d['auditorias'],
-            'nota_media': sum(d['notas']) / len(d['notas']),
-        })
-
-    return sorted(ranking, key=lambda x: -x['score_risco'])
-
 
     # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 4 - REINCIDÊNCIAS & INSIGHTS (VERSÃO LIMPA)
     # ═══════════════════════════════════════════════════════════════════
-with sub_tabs[3]:
-    st.markdown("### Reincidências & Insights")
-    st.caption("Análise de causa raiz e ações prioritárias com base nos dados reais das auditorias.")
+    with sub_tabs[3]:
+        st.markdown(cab_html(
+            "Reincidências & Insights",
+            "Análise de causa raiz e ações prioritárias com base nos dados reais das auditorias.",
+            "✦",
+        ), unsafe_allow_html=True)
 
-    if df_auditorias.empty:
-        st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
-    else:
-        # ── FILTROS ──
-        col_f1, col_f2 = st.columns(2)
-
-        with col_f1:
-            filtro_loja = st.selectbox(
-                "Filtrar por Loja",
-                ["Todas"] + sorted(df_auditorias['loja'].unique().tolist()),
-                key="reinc_loja"
-            )
-
-        with col_f2:
-            filtro_frente = st.selectbox(
-                "Filtrar por Frente",
-                ["Todas"] + df_auditorias['tipo'].unique().tolist(),
-                format_func=lambda x: CHECKLISTS.get(x, {}).get('nome', x) if x != "Todas" else "Todas",
-                key="reinc_frente"
-            )
-
-        df_filtrada = df_auditorias.copy()
-        if filtro_loja != "Todas":
-            df_filtrada = df_filtrada[df_filtrada['loja'] == filtro_loja]
-        if filtro_frente != "Todas":
-            df_filtrada = df_filtrada[df_filtrada['tipo'] == filtro_frente]
-
-        if df_filtrada.empty:
-            st.info("Nenhuma auditoria encontrada com os filtros selecionados.")
+        if df_auditorias.empty:
+            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
         else:
-            # ── CÁLCULOS ──
-            df_reinc = calcular_reincidencias(df_filtrada)
-            ranking_lojas = calcular_ranking_risco_lojas(df_filtrada)
+            # ── FILTROS ──
+            col_f1, col_f2 = st.columns(2)
 
-            lojas_risco_sanitario = set()
-            for _, row in df_filtrada.iterrows():
-                if isinstance(row['criticas'], list):
-                    for c in row['criticas']:
-                        if any(x in c.lower() for x in ['praga', 'mofo', 'infiltra', 'estrutura', 'ralo']):
-                            lojas_risco_sanitario.add(row['loja'])
+            with col_f1:
+                filtro_loja = st.selectbox(
+                    "Filtrar por Loja",
+                    ["Todas"] + sorted(df_auditorias['loja'].unique().tolist()),
+                    key="reinc_loja"
+                )
 
-            # ── DIAGNÓSTICO EXECUTIVO ──
-            insights = []
+            with col_f2:
+                filtro_frente = st.selectbox(
+                    "Filtrar por Frente",
+                    ["Todas"] + df_auditorias['tipo'].unique().tolist(),
+                    format_func=lambda x: CHECKLISTS.get(x, {}).get('nome', x) if x != "Todas" else "Todas",
+                    key="reinc_frente"
+                )
 
-            if lojas_risco_sanitario:
-                insights.append({
-                    'icone': '⚠️',
-                    'classe': 'insight-critical',
-                    'texto': (f"Risco sanitário ativo: {', '.join(sorted(lojas_risco_sanitario))} "
-                                f"com registro de praga/infiltração — tratativa prioritária.")
-                })
+            df_filtrada = df_auditorias.copy()
+            if filtro_loja != "Todas":
+                df_filtrada = df_filtrada[df_filtrada['loja'] == filtro_loja]
+            if filtro_frente != "Todas":
+                df_filtrada = df_filtrada[df_filtrada['tipo'] == filtro_frente]
 
-            if ranking_lojas:
-                pior_loja = ranking_lojas[0]
-                nome_pior = dict(LOJAS).get(pior_loja['loja'], pior_loja['loja'])
-                insights.append({
-                    'icone': '◆',
-                    'classe': 'insight-warning',
-                    'texto': (f"<b>{pior_loja['loja']} - {nome_pior}</b> lidera o ranking de risco "
-                                f"({pior_loja['score_risco']} pts em {pior_loja['total_criticas']} não conformidades) "
-                                f"— candidata a auditoria de acompanhamento prioritária.")
-                })
+            if df_filtrada.empty:
+                st.info("Nenhuma auditoria encontrada com os filtros selecionados.")
+            else:
+                # ── CÁLCULOS ──
+                df_reinc = calcular_reincidencias(df_filtrada)
+                ranking_lojas = calcular_ranking_risco_lojas(df_filtrada)
 
-            if not df_reinc.empty:
-                top_tema = df_reinc.iloc[0]
-                insights.append({
-                    'icone': '▼',
-                    'classe': 'insight-highlight',
-                    'texto': (f"O tema mais recorrente é '<b>{top_tema['Tema']}</b>' "
-                                f"com {int(top_tema['Frequência'])} ocorrências — indica falha sistêmica de padrão.")
-                })
+                lojas_risco_sanitario = set()
+                for _, row in df_filtrada.iterrows():
+                    if isinstance(row['criticas'], list):
+                        for c in row['criticas']:
+                            texto_c = normalizar_critica(c)['texto'].lower()
+                            if any(x in texto_c for x in ['praga', 'mofo', 'infiltra', 'estrutura', 'ralo']):
+                                lojas_risco_sanitario.add(row['loja'])
 
-            # ── AÇÕES RECOMENDADAS (COM BUSCA POR PALAVRAS-CHAVE) ──
-            acoes_recomendadas = []
+                # ── DIAGNÓSTICO EXECUTIVO ──
+                insights = []
 
-            for _, row in df_reinc.iterrows():
-                tema = row['Tema']
-                freq = row['Frequência']
-                causa = classificar_causa_raiz(tema)
+                if lojas_risco_sanitario:
+                    insights.append({
+                        'icone': '⚠️',
+                        'classe': 'insight-critical',
+                        'texto': (f"Risco sanitário ativo: {', '.join(sorted(lojas_risco_sanitario))} "
+                                    f"com registro de praga/infiltração — tratativa prioritária.")
+                    })
 
-                exemplos_reais = []
-                lojas_afetadas = set()
-                niveis_encontrados = []
+                if ranking_lojas:
+                    pior_loja = ranking_lojas[0]
+                    nome_pior = dict(LOJAS).get(pior_loja['loja'], pior_loja['loja'])
+                    insights.append({
+                        'icone': '◆',
+                        'classe': 'insight-warning',
+                        'texto': (f"<b>{pior_loja['loja']} - {nome_pior}</b> lidera o ranking de risco "
+                                    f"({pior_loja['score_risco']} pts em {pior_loja['total_criticas']} não conformidades) "
+                                    f"— candidata a auditoria de acompanhamento prioritária.")
+                    })
 
-                # ── EXTRAI PALAVRAS-CHAVE DO TEMA ──
-                stopwords = {'de', 'da', 'do', 'das', 'dos', 'e', 'ou', 'para', 'com', 'sem', 
-                            'em', 'na', 'no', 'nas', 'nos', 'à', 'ao', 'aos', 'que', 'se', 'por',
-                            'um', 'uma', 'uns', 'umas', 'o', 'a', 'os', 'as', 'é', 'não', 'mais'}
+                if not df_reinc.empty:
+                    top_tema = df_reinc.iloc[0]
+                    insights.append({
+                        'icone': '▼',
+                        'classe': 'insight-highlight',
+                        'texto': (f"O tema mais recorrente é '<b>{top_tema['Tema']}</b>' "
+                                    f"com {int(top_tema['Frequência'])} ocorrências — indica falha sistêmica de padrão.")
+                    })
+
+                # ── AÇÕES RECOMENDADAS (COM BUSCA POR PALAVRAS-CHAVE) ──
+                acoes_recomendadas = []
+
+                for _, row in df_reinc.iterrows():
+                    tema = row['Tema']
+                    freq = row['Frequência']
+                    causa = classificar_causa_raiz(tema)
+
+                    exemplos_reais = []
+                    lojas_afetadas = set()
+                    niveis_encontrados = []
+
+                    # ── EXTRAI PALAVRAS-CHAVE DO TEMA ──
+                    stopwords = {'de', 'da', 'do', 'das', 'dos', 'e', 'ou', 'para', 'com', 'sem', 
+                                'em', 'na', 'no', 'nas', 'nos', 'à', 'ao', 'aos', 'que', 'se', 'por',
+                                'um', 'uma', 'uns', 'umas', 'o', 'a', 'os', 'as', 'é', 'não', 'mais'}
                 
-                palavras_chave = []
-                for p in tema.lower().split():
-                    p_limpa = p.strip('.,;:!?()[]{}"\'')
-                    if len(p_limpa) > 3 and p_limpa not in stopwords:
-                        palavras_chave.append(p_limpa)
+                    palavras_chave = []
+                    for p in tema.lower().split():
+                        p_limpa = p.strip('.,;:!?()[]{}"\'')
+                        if len(p_limpa) > 3 and p_limpa not in stopwords:
+                            palavras_chave.append(p_limpa)
                 
-                if not palavras_chave:
-                    palavras_chave = tema.lower().split()[:3]
+                    if not palavras_chave:
+                        palavras_chave = tema.lower().split()[:3]
 
-                for _, r in df_filtrada.iterrows():
-                    if isinstance(r['criticas'], list):
-                        for c in r['criticas']:
-                            c_lower = c.lower()
-                            # Busca por qualquer palavra-chave (match_count >= 1)
-                            match_count = sum(1 for palavra in palavras_chave if palavra in c_lower)
-                            
-                            if match_count >= 1:
-                                exemplos_reais.append({'loja': r['loja'], 'texto': c})
-                                lojas_afetadas.add(str(r['loja']))
-
-                                for n in range(0, 6):
-                                    if f'nível {n}' in c_lower or f'nivel {n}' in c_lower:
-                                        niveis_encontrados.append(n)
-                                        break
-
-                # Se não encontrou lojas, tenta uma busca mais ampla
-                if not lojas_afetadas:
                     for _, r in df_filtrada.iterrows():
                         if isinstance(r['criticas'], list):
                             for c in r['criticas']:
-                                c_lower = c.lower()
-                                for palavra in palavras_chave[:3]:
-                                    if palavra in c_lower:
-                                        lojas_afetadas.add(str(r['loja']))
+                                texto_c = normalizar_critica(c)['texto']
+                                c_lower = texto_c.lower()
+                                # Busca por qualquer palavra-chave (match_count >= 1)
+                                match_count = sum(1 for palavra in palavras_chave if palavra in c_lower)
+
+                                if match_count >= 1:
+                                    exemplos_reais.append({'loja': r['loja'], 'texto': texto_c})
+                                    lojas_afetadas.add(str(r['loja']))
+
+                                    for n in range(0, 6):
+                                        if f'nível {n}' in c_lower or f'nivel {n}' in c_lower:
+                                            niveis_encontrados.append(n)
+                                            break
+
+                    # Se não encontrou lojas, tenta uma busca mais ampla
+                    if not lojas_afetadas:
+                        for _, r in df_filtrada.iterrows():
+                            if isinstance(r['criticas'], list):
+                                for c in r['criticas']:
+                                    c_lower = normalizar_critica(c)['texto'].lower()
+                                    for palavra in palavras_chave[:3]:
+                                        if palavra in c_lower:
+                                            lojas_afetadas.add(str(r['loja']))
+                                            break
+                                    if lojas_afetadas:
                                         break
-                                if lojas_afetadas:
-                                    break
-                        if lojas_afetadas:
-                            break
+                            if lojas_afetadas:
+                                break
 
-                # Nível médio
-                nivel_medio = sum(niveis_encontrados) / len(niveis_encontrados) if niveis_encontrados else 3.0
-                num_lojas = len(lojas_afetadas)
+                    # Nível médio
+                    nivel_medio = sum(niveis_encontrados) / len(niveis_encontrados) if niveis_encontrados else 3.0
+                    num_lojas = len(lojas_afetadas)
 
-                # Urgência
-                if nivel_medio <= 1.0:
-                    urgencia = "alta"
-                elif num_lojas > 2:
-                    urgencia = "média"
-                else:
-                    urgencia = "baixa"
-
-                if num_lojas > 3:
-                    padrao_txt = "sistêmico"
-                elif num_lojas > 1:
-                    padrao_txt = "recorrente"
-                else:
-                    padrao_txt = "isolado"
-
-                if nivel_medio == 0:
-                    diagnostico = (f"[{causa}] ⛔ PRÁTICA AUSENTE em {num_lojas} loja(s) — "
-                                    f"processo não está sendo executado. Gravidade máxima.")
-                else:
-                    diagnostico = (f"[{causa}] Problema {padrao_txt} em {num_lojas} loja(s), "
-                                    f"gravidade média nível {nivel_medio:.1f}.")
-
-                # Ações
-                if nivel_medio == 0:
-                    acao = (diagnostico + " AÇÃO URGENTE: Implementar imediatamente a prática ausente, "
-                            "mesmo que de forma simplificada, para eliminar o risco. Em seguida, "
-                            "desenhar o processo completo, treinar a equipe e integrar à rotina de gestão.")
-                elif causa == 'Cumprimento de POP':
-                    acao = (diagnostico + " AÇÃO: O procedimento já existe — o problema é adesão. "
-                            "Fazer blitz de verificação sem aviso prévio e vincular resultado à avaliação do líder.")
-                elif causa == 'Gestão Visual & Padronização':
-                    acao = (diagnostico + " AÇÃO: Padronizar checklist de afixação nos pontos críticos e "
-                            "incluir verificação de gestão visual na rotina diária do líder.")
-                elif causa == 'Gestão & Indicadores':
-                    acao = (diagnostico + " AÇÃO: Cobrar plano de ação formal (5W2H) em comitê mensal de "
-                            "controladoria; sem plano registrado, o item permanece em aberto.")
-                elif causa == 'Estrutura & Manutenção':
+                    # Urgência
                     if nivel_medio <= 1.0:
-                        acao = (diagnostico + " AÇÃO CRÍTICA: Acionar manutenção emergencial e controle de "
-                                "pragas imediatamente, com validação fotográfica em até 48h.")
+                        urgencia = "alta"
+                    elif num_lojas > 2:
+                        urgencia = "média"
                     else:
-                        acao = (diagnostico + " AÇÃO: Incluir a loja em cronograma preventivo de manutenção "
-                                "e controle de pragas com verificação mensal.")
-                elif causa == 'Controle de Processo / Equipamento':
-                    if num_lojas > 2:
-                        acao = (diagnostico + " AÇÃO: Avaliar substituição por monitoramento digital de "
-                                "temperatura (elimina dependência de registro manual).")
+                        urgencia = "baixa"
+
+                    if num_lojas > 3:
+                        padrao_txt = "sistêmico"
+                    elif num_lojas > 1:
+                        padrao_txt = "recorrente"
                     else:
-                        acao = (diagnostico + " AÇÃO: Reforçar o procedimento já existente com registro "
-                                "obrigatório assinado e calibração de equipamento.")
-                elif causa == 'Rotina de Gestão':
-                    acao = (diagnostico + " AÇÃO: Cobrar cumprimento do ritual semanal já definido, com pauta "
-                            "e ata obrigatórias anexadas ao painel de gestão.")
-                elif causa == 'Capacitação de Pessoas':
-                    acao = (diagnostico + " AÇÃO: Verificar se o programa de integração já existente está "
-                            "sendo de fato aplicado a 100% dos admitidos; auditar registros de reciclagem.")
+                        padrao_txt = "isolado"
+
+                    if nivel_medio == 0:
+                        diagnostico = (f"[{causa}] ⛔ PRÁTICA AUSENTE em {num_lojas} loja(s) — "
+                                        f"processo não está sendo executado. Gravidade máxima.")
+                    else:
+                        diagnostico = (f"[{causa}] Problema {padrao_txt} em {num_lojas} loja(s), "
+                                        f"gravidade média nível {nivel_medio:.1f}.")
+
+                    # Ações
+                    if nivel_medio == 0:
+                        acao = (diagnostico + " AÇÃO URGENTE: Implementar imediatamente a prática ausente, "
+                                "mesmo que de forma simplificada, para eliminar o risco. Em seguida, "
+                                "desenhar o processo completo, treinar a equipe e integrar à rotina de gestão.")
+                    elif causa == 'Cumprimento de POP':
+                        acao = (diagnostico + " AÇÃO: O procedimento já existe — o problema é adesão. "
+                                "Fazer blitz de verificação sem aviso prévio e vincular resultado à avaliação do líder.")
+                    elif causa == 'Gestão Visual & Padronização':
+                        acao = (diagnostico + " AÇÃO: Padronizar checklist de afixação nos pontos críticos e "
+                                "incluir verificação de gestão visual na rotina diária do líder.")
+                    elif causa == 'Gestão & Indicadores':
+                        acao = (diagnostico + " AÇÃO: Cobrar plano de ação formal (5W2H) em comitê mensal de "
+                                "controladoria; sem plano registrado, o item permanece em aberto.")
+                    elif causa == 'Estrutura & Manutenção':
+                        if nivel_medio <= 1.0:
+                            acao = (diagnostico + " AÇÃO CRÍTICA: Acionar manutenção emergencial e controle de "
+                                    "pragas imediatamente, com validação fotográfica em até 48h.")
+                        else:
+                            acao = (diagnostico + " AÇÃO: Incluir a loja em cronograma preventivo de manutenção "
+                                    "e controle de pragas com verificação mensal.")
+                    elif causa == 'Controle de Processo / Equipamento':
+                        if num_lojas > 2:
+                            acao = (diagnostico + " AÇÃO: Avaliar substituição por monitoramento digital de "
+                                    "temperatura (elimina dependência de registro manual).")
+                        else:
+                            acao = (diagnostico + " AÇÃO: Reforçar o procedimento já existente com registro "
+                                    "obrigatório assinado e calibração de equipamento.")
+                    elif causa == 'Rotina de Gestão':
+                        acao = (diagnostico + " AÇÃO: Cobrar cumprimento do ritual semanal já definido, com pauta "
+                                "e ata obrigatórias anexadas ao painel de gestão.")
+                    elif causa == 'Capacitação de Pessoas':
+                        acao = (diagnostico + " AÇÃO: Verificar se o programa de integração já existente está "
+                                "sendo de fato aplicado a 100% dos admitidos; auditar registros de reciclagem.")
+                    else:
+                        acao = (diagnostico + " AÇÃO: Análise de causa raiz dedicada com o gerente da loja, "
+                                "com plano corretivo formal e prazo definido.")
+
+                    exemplos_formatados = [{'loja': ex['loja'], 'texto': ex['texto'][:120]} for ex in exemplos_reais[:3]]
+
+                    acoes_recomendadas.append({
+                        'tema': tema,
+                        'causa': causa,
+                        'ocorr': freq,
+                        'acao': acao,
+                        'exemplos': exemplos_formatados,
+                        'urgencia': urgencia,
+                        'lojas_afetadas': sorted(lojas_afetadas) if lojas_afetadas else ['Não identificado']
+                    })
+
+                urgencia_order = {'alta': 0, 'média': 1, 'baixa': 2}
+                acoes_recomendadas.sort(key=lambda x: (urgencia_order.get(x['urgencia'], 3), -x['ocorr']))
+
+                # ── EXIBIÇÃO ──
+                style = """
+                <style>
+                .insight-item { padding: 12px 0; border-bottom: 1px solid #EEF3EE; }
+                .insight-icon { font-size: 16px; margin-right: 8px; }
+                .insight-text { font-size: 13px; color: #0d2a16; line-height: 1.5; }
+                .insight-highlight { font-weight: 700; color: #1E7A2A; }
+                .insight-warning { font-weight: 700; color: #E67E22; }
+                .insight-critical { font-weight: 700; color: #D64545; }
+                .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 8px; }
+                .data-table th { text-align: left; padding: 0.7rem; background: #0a3d1f; color: #9ecfb2; font-weight: 700; font-size: 0.68rem; text-transform: uppercase; border-bottom: 3px solid #f8c10a; }
+                .data-table td { padding: 0.7rem; border-bottom: 1px solid #EEF3EE; vertical-align: top; }
+                .data-table tr:hover { background: #f8faf8; }
+                .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; }
+                .tag-alta { background: #D64545; color: white; }
+                .tag-media { background: #E67E22; color: white; }
+                .tag-baixa { background: #728177; color: white; }
+                </style>
+                """
+                st.markdown(style, unsafe_allow_html=True)
+
+                # --- Diagnóstico executivo ---
+                st.markdown("**Diagnóstico executivo**")
+                html = ""
+                for insight in insights:
+                    html += "<div class='insight-item'><div class='insight-text'>"
+                    html += f"<span class='insight-icon'>{insight['icone']}</span>"
+                    classe = insight['classe']
+                    html += f"<span class='{classe}'>{insight['texto']}</span>" if classe else insight['texto']
+                    html += "</div></div>"
+                st.markdown(html, unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # --- Ranking de lojas por risco ---
+                st.markdown("### Ranking de lojas por risco ponderado")
+                st.caption("Score pela escala oficial: Nível 0 (5 pts - Prática ausente), Nível 1 (4 pts), Nível 2 (3 pts), Nível 3 (2 pts), Nível 4 (1 pt), Nível 5 (0 pts - Excelência).")
+
+                if ranking_lojas:
+                    html = "<table class='data-table'><thead><tr><th>Loja</th><th>Score</th><th>N.C.</th><th>Nota média</th></tr></thead><tbody>"
+                    for r in ranking_lojas[:10]:
+                        nome_loja = dict(LOJAS).get(r['loja'], r['loja'])
+                        html += "<tr>"
+                        html += f"<td><b>{r['loja']}</b> - {nome_loja}</td>"
+                        html += f"<td style='color:#D64545;font-weight:700;'>{r['score_risco']}</td>"
+                        html += f"<td>{r['total_criticas']}</td>"
+                        html += f"<td>{r['nota_media']:.1f}%</td>"
+                        html += "</tr>"
+                    html += "</tbody></table>"
+                    st.markdown(html, unsafe_allow_html=True)
                 else:
-                    acao = (diagnostico + " AÇÃO: Análise de causa raiz dedicada com o gerente da loja, "
-                            "com plano corretivo formal e prazo definido.")
+                    st.info("Sem dados para ranking no recorte atual.")
 
-                exemplos_formatados = [{'loja': ex['loja'], 'texto': ex['texto'][:120]} for ex in exemplos_reais[:3]]
+                st.markdown("<br>", unsafe_allow_html=True)
 
-                acoes_recomendadas.append({
-                    'tema': tema,
-                    'causa': causa,
-                    'ocorr': freq,
-                    'acao': acao,
-                    'exemplos': exemplos_formatados,
-                    'urgencia': urgencia,
-                    'lojas_afetadas': sorted(lojas_afetadas) if lojas_afetadas else ['Não identificado']
-                })
+                # --- Ações recomendadas ---
+                st.markdown("### Ações recomendadas por reincidência")
 
-            urgencia_order = {'alta': 0, 'média': 1, 'baixa': 2}
-            acoes_recomendadas.sort(key=lambda x: (urgencia_order.get(x['urgencia'], 3), -x['ocorr']))
+                if acoes_recomendadas:
+                    html = "<table class='data-table'><thead><tr>"
+                    html += "<th>Tema</th><th style='text-align:center;'>Ocorr.</th><th style='text-align:center;'>Urgência</th><th>Ação recomendada</th>"
+                    html += "</tr></thead><tbody>"
 
-            # ── EXIBIÇÃO ──
-            style = """
-            <style>
-            .insight-item { padding: 12px 0; border-bottom: 1px solid #EEF3EE; }
-            .insight-icon { font-size: 16px; margin-right: 8px; }
-            .insight-text { font-size: 13px; color: #0d2a16; line-height: 1.5; }
-            .insight-highlight { font-weight: 700; color: #1E7A2A; }
-            .insight-warning { font-weight: 700; color: #E67E22; }
-            .insight-critical { font-weight: 700; color: #D64545; }
-            .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 8px; }
-            .data-table th { text-align: left; padding: 0.7rem; background: #0a3d1f; color: #9ecfb2; font-weight: 700; font-size: 0.68rem; text-transform: uppercase; border-bottom: 3px solid #f8c10a; }
-            .data-table td { padding: 0.7rem; border-bottom: 1px solid #EEF3EE; vertical-align: top; }
-            .data-table tr:hover { background: #f8faf8; }
-            .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; }
-            .tag-alta { background: #D64545; color: white; }
-            .tag-media { background: #E67E22; color: white; }
-            .tag-baixa { background: #728177; color: white; }
-            </style>
-            """
-            st.markdown(style, unsafe_allow_html=True)
-
-            # --- Diagnóstico executivo ---
-            st.markdown("**Diagnóstico executivo**")
-            html = ""
-            for insight in insights:
-                html += "<div class='insight-item'><div class='insight-text'>"
-                html += f"<span class='insight-icon'>{insight['icone']}</span>"
-                classe = insight['classe']
-                html += f"<span class='{classe}'>{insight['texto']}</span>" if classe else insight['texto']
-                html += "</div></div>"
-            st.markdown(html, unsafe_allow_html=True)
-
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # --- Ranking de lojas por risco ---
-            st.markdown("### Ranking de lojas por risco ponderado")
-            st.caption("Score pela escala oficial: Nível 0 (5 pts - Prática ausente), Nível 1 (4 pts), Nível 2 (3 pts), Nível 3 (2 pts), Nível 4 (1 pt), Nível 5 (0 pts - Excelência).")
-
-            if ranking_lojas:
-                html = "<table class='data-table'><thead><tr><th>Loja</th><th>Score</th><th>N.C.</th><th>Nota média</th></tr></thead><tbody>"
-                for r in ranking_lojas[:10]:
-                    nome_loja = dict(LOJAS).get(r['loja'], r['loja'])
-                    html += "<tr>"
-                    html += f"<td><b>{r['loja']}</b> - {nome_loja}</td>"
-                    html += f"<td style='color:#D64545;font-weight:700;'>{r['score_risco']}</td>"
-                    html += f"<td>{r['total_criticas']}</td>"
-                    html += f"<td>{r['nota_media']:.1f}%</td>"
-                    html += "</tr>"
-                html += "</tbody></table>"
-                st.markdown(html, unsafe_allow_html=True)
-            else:
-                st.info("Sem dados para ranking no recorte atual.")
-
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # --- Ações recomendadas ---
-            st.markdown("### Ações recomendadas por reincidência")
-
-            if acoes_recomendadas:
-                html = "<table class='data-table'><thead><tr>"
-                html += "<th>Tema</th><th style='text-align:center;'>Ocorr.</th><th style='text-align:center;'>Urgência</th><th>Ação recomendada</th>"
-                html += "</tr></thead><tbody>"
-
-                for item in acoes_recomendadas:
-                    tag_urg = f"<span class='tag tag-{item['urgencia'].replace('média','media')}'>{item['urgencia'].upper()}</span>"
-                    html += "<tr>"
-                    html += f"<td><b>{item['tema']}</b><br><span style='font-size:11px;color:#728177;'>{item['causa']}</span></td>"
-                    html += f"<td style='text-align:center;font-weight:700;color:#D64545;'>{int(item['ocorr'])}</td>"
-                    html += f"<td style='text-align:center;'>{tag_urg}</td>"
-                    html += f"<td>{item['acao']}"
+                    for item in acoes_recomendadas:
+                        tag_urg = f"<span class='tag tag-{item['urgencia'].replace('média','media')}'>{item['urgencia'].upper()}</span>"
+                        html += "<tr>"
+                        html += f"<td><b>{item['tema']}</b><br><span style='font-size:11px;color:#728177;'>{item['causa']}</span></td>"
+                        html += f"<td style='text-align:center;font-weight:700;color:#D64545;'>{int(item['ocorr'])}</td>"
+                        html += f"<td style='text-align:center;'>{tag_urg}</td>"
+                        html += f"<td>{item['acao']}"
                     
-                    if item.get('lojas_afetadas') and item['lojas_afetadas'] != ['Não identificado']:
-                        html += f"<div style='font-size:0.75rem;color:#1E7A2A;margin-top:4px;'><strong>Lojas:</strong> {', '.join(item['lojas_afetadas'])}</div>"
+                        if item.get('lojas_afetadas') and item['lojas_afetadas'] != ['Não identificado']:
+                            html += f"<div style='font-size:0.75rem;color:#1E7A2A;margin-top:4px;'><strong>Lojas:</strong> {', '.join(item['lojas_afetadas'])}</div>"
                     
-                    if item.get('exemplos'):
-                        codigos_unicos = set()
-                        for ex in item['exemplos']:
-                            codigo = ex['texto'].split('—')[0].strip() if '—' in ex['texto'] else ex['texto'][:10]
-                            if codigo and not codigo[0].isdigit():
-                                codigo = ex['texto'][:10]
-                            codigos_unicos.add(f"Loja {ex['loja']}: {codigo}")
+                        if item.get('exemplos'):
+                            codigos_unicos = set()
+                            for ex in item['exemplos']:
+                                codigo = ex['texto'].split('—')[0].strip() if '—' in ex['texto'] else ex['texto'][:10]
+                                if codigo and not codigo[0].isdigit():
+                                    codigo = ex['texto'][:10]
+                                codigos_unicos.add(f"Loja {ex['loja']}: {codigo}")
                         
-                        if codigos_unicos:
-                            html += "<div style='font-size:0.75rem;color:#728177;margin-top:4px;'>"
-                            html += f"<strong>Itens:</strong> {', '.join(list(codigos_unicos)[:3])}"
-                            html += "</div>"
+                            if codigos_unicos:
+                                html += "<div style='font-size:0.75rem;color:#728177;margin-top:4px;'>"
+                                html += f"<strong>Itens:</strong> {', '.join(list(codigos_unicos)[:3])}"
+                                html += "</div>"
                     
-                    html += "</td></tr>"
+                        html += "</td></tr>"
 
-                html += "</tbody></table>"
-                st.markdown(html, unsafe_allow_html=True)
-            else:
-                st.info("Nenhuma ação recomendada no momento.")
+                    html += "</tbody></table>"
+                    st.markdown(html, unsafe_allow_html=True)
+                else:
+                    st.info("Nenhuma ação recomendada no momento.")
                 
     
         # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 5 - RANKINGS
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[4]:
-        st.markdown("### Rankings")
-        st.caption("Classificações pela auditoria mais recentes de cada loja/frente.")
+        st.markdown(cab_html(
+            "Rankings",
+            "Classificações pela auditoria mais recentes de cada loja/frente.",
+            "≡",
+        ), unsafe_allow_html=True)
         
         if df_auditorias.empty:
             st.info(" Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
@@ -1833,7 +2081,7 @@ with sub_tabs[3]:
                     if isinstance(row['topicos'], list) and len(row['topicos']) > i:
                         pcts.append(row['topicos'][i].get('pct', 0))
                 if pcts:
-                    topicos_medias.append({'topico': nome, 'media': sum(pcts)/len(pcts)})
+                    topicos_medias.append({'topico': nome, 'media': sum(pcts)/len(pcts), 'peso': POSSIVEL[i]})
             
             # ═══════════════════════════════════════════════════════════
             # LINHA 1: Ranking geral + Tópicos frágeis
@@ -1842,56 +2090,75 @@ with sub_tabs[3]:
             
             with col1:
                 st.markdown("**Ranking geral das lojas**")
-                
+
                 if not ranking_loja.empty:
+                    frentes_por_loja_rk = df_auditorias.groupby('loja')['tipo'].nunique().to_dict()
+                    n_frentes_total_rk = len(CHECKLISTS)
+                    tem_cobertura_parcial = any(
+                        frentes_por_loja_rk.get(loja, 0) < n_frentes_total_rk for loja in ranking_loja.index
+                    )
+
                     html = "<table style='width:100%;border-collapse:collapse;font-size:0.85rem;'>"
                     html += "<thead><tr style='background:#0a3d1f;'>"
                     html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:left;font-size:0.7rem;text-transform:uppercase;'>#</th>"
                     html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:left;font-size:0.7rem;text-transform:uppercase;'>Loja</th>"
+                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Cobertura</th>"
                     html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Nota</th>"
                     html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Faixa</th>"
                     html += "</tr></thead><tbody>"
-                    
+
                     for i, (loja, nota) in enumerate(ranking_loja.items(), 1):
                         f = faixa(nota)
                         nome_loja = dict(LOJAS).get(loja, loja)
                         cor = f['cor']
                         rot = f['rot']
-                        
+                        n_frentes_loja = frentes_por_loja_rk.get(loja, 0)
+                        parcial = n_frentes_loja < n_frentes_total_rk
+                        cor_cob = '#D64545' if parcial else '#728177'
+                        bg_cob = '#fdeeee' if parcial else '#F4F7F3'
+
                         html += "<tr style='border-bottom:1px solid #e8f3ec;'>"
                         html += "<td style='padding:0.65rem 0.8rem;font-weight:700;color:#1E7A2A;'>" + str(i) + "</td>"
                         html += "<td style='padding:0.65rem 0.8rem;font-weight:600;'><span style='font-weight:700;color:#1E7A2A;'>" + loja + "</span> " + nome_loja + "</td>"
+                        html += f"<td style='padding:0.65rem 0.8rem;text-align:center;'><span style='background:{bg_cob};color:{cor_cob};padding:2px 9px;border-radius:5px;font-size:0.7rem;font-weight:700;'>{n_frentes_loja}/{n_frentes_total_rk}</span></td>"
                         html += "<td style='padding:0.65rem 0.8rem;text-align:center;font-weight:700;font-size:0.95rem;color:" + cor + ";'>" + f"{nota:.2f}" + "</td>"
                         html += "<td style='padding:0.65rem 0.8rem;text-align:center;'><span style='background:" + cor + ";color:white;padding:2px 10px;border-radius:20px;font-size:0.65rem;font-weight:700;'>" + rot + "</span></td>"
                         html += "</tr>"
-                    
+
                     html += "</tbody></table>"
                     st.markdown(html, unsafe_allow_html=True)
+                    if tem_cobertura_parcial:
+                        st.caption("ⓘ Unidades com cobertura parcial não são diretamente comparáveis às demais.")
                 else:
                     st.info("Nenhuma loja auditada.")
             
             with col2:
-                st.markdown("**Tópicos mais frágeis da rede**")
-                st.caption("Onde a rede mais perde pontos.")
-                
+                st.markdown("**Blocos mais frágeis da rede** <span style='font-size:11px;color:#728177;font-weight:400'>onde a rede mais perde score</span>", unsafe_allow_html=True)
+
                 topicos_ordenados = sorted(topicos_medias, key=lambda x: x['media'])
-                
+
                 html = ""
                 for item in topicos_ordenados:
                     f = faixa(item['media'])
                     cor = f['cor']
                     media_str = f"{item['media']:.2f}"
                     media_pct = f"{item['media']:.2f}"
-                    
+
                     html += "<div style='display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #EEF3EE;'>"
-                    html += "<div style='width:120px;font-size:0.85rem;font-weight:600;color:#0d2a16;'>" + item['topico'] + "</div>"
+                    html += "<div style='width:150px;font-size:0.85rem;font-weight:600;color:#0d2a16;'>" + item['topico'] + f" <span style='color:#728177;font-weight:400'>(peso {item['peso']}%)</span></div>"
                     html += "<div style='flex:1;height:24px;background:#F4F7F3;border-radius:6px;overflow:hidden;'>"
                     html += "<div style='height:100%;width:" + media_pct + "%;background:" + cor + ";border-radius:6px;'></div>"
                     html += "</div>"
                     html += "<div style='width:50px;text-align:right;font-weight:700;font-size:0.9rem;color:" + cor + ";'>" + media_str + "</div>"
                     html += "</div>"
-                
+
                 st.markdown(html, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style="background:#fff8e6;border:1px solid #f0dca0;border-left:4px solid #F2C300;
+                    border-radius:8px;padding:11px 14px;font-size:13px;margin-top:16px;display:flex;gap:10px;">
+                    <span>ⓘ</span><div>O primeiro bloco tem peso {POSSIVEL[0]}% — cada ponto perdido nele custa mais que nos demais.</div>
+                </div>
+                """, unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
             
@@ -1911,31 +2178,36 @@ with sub_tabs[3]:
                     html += "</div>"
                     
                     df_tipo = df_auditorias[df_auditorias['tipo'] == tipo_key]
-                    
+
                     if not df_tipo.empty:
                         ultimas_tipo = df_tipo.sort_values('data').groupby('loja').last().reset_index()
                         rank_tipo = ultimas_tipo.groupby('loja')['total'].mean().sort_values(ascending=False)
-                        
+
                         for i, (loja, nota) in enumerate(rank_tipo.items(), 1):
                             f = faixa(nota)
                             cor = f['cor']
                             nota_str = f"{nota:.2f}"
                             nome_loja = dict(LOJAS).get(loja, loja)
-                            
+
                             html += "<div style='display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #EEF3EE;'>"
                             html += "<span style='font-weight:600;color:#728177;width:20px;'>" + str(i) + ".</span>"
                             html += "<span style='font-weight:700;font-size:0.85rem;color:#0d2a16;flex:1;'>" + loja + " " + nome_loja + "</span>"
                             html += "<span style='font-weight:700;font-size:0.9rem;color:" + cor + ";'>" + nota_str + "</span>"
                             html += "</div>"
-                    
+                    else:
+                        html += "<div style='text-align:center;padding:20px;color:#728177;font-size:0.85rem;'>Nenhuma auditoria desta frente.</div>"
+
                     st.markdown(html, unsafe_allow_html=True)
     
     # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 6 - MAPA DE RISCO (HEATMAP)
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[5]:
-        st.markdown("### Mapa de Risco")
-        st.caption("Resumo dos Tópicos da auditoria mais recentes.")
+        st.markdown(cab_html(
+            "Mapa de risco",
+            "Resumo dos Tópicos da auditoria mais recentes.",
+            "▦",
+        ), unsafe_allow_html=True)
         
         # ─ VERIFICA SE HÁ DADOS ──
         if df_auditorias.empty:
@@ -1952,7 +2224,8 @@ with sub_tabs[3]:
             df_heat = df_auditorias[df_auditorias['tipo'] == tipo_heatmap]
             
             if df_heat.empty:
-                st.info(f"Nenhuma auditoria para {CHECKLISTS[tipo_heatmap]['nome']}")
+                st.info(f"Nenhuma auditoria de {CHECKLISTS[tipo_heatmap]['nome']} foi registrada. "
+                        "Use a aba 'Importar PDF' ou 'Lançar Manual' para registrar a primeira.")
             else:
                 # Última auditoria por loja
                 df_heat = df_heat.sort_values('data').groupby('loja').last().reset_index()
@@ -2032,11 +2305,10 @@ with sub_tabs[3]:
                     <thead>
                         <tr>
                             <th>Loja</th>
-                            <th>Aderência</th>
-                            <th>Maturidade</th>
-                            <th>Conhecimento</th>
-                            <th>Eficiência</th>
-                            <th>Gaps/Estrut.</th>
+                """ + "".join(
+                    f"<th>{nome}<br><span style='font-weight:400;color:#9aa89c'>{POSSIVEL[i]}%</span></th>"
+                    for i, nome in enumerate(SLOTS_CURTOS)
+                ) + """
                             <th>Nota</th>
                         </tr>
                     </thead>
@@ -2081,31 +2353,18 @@ with sub_tabs[3]:
                 
                 st.caption(f"{len(df_heat)} loja(s) auditada(s) · Exibindo a última auditoria de cada loja")
                 
-                # ── LEGENDA ─
-                st.markdown("""
-                <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.85rem;color:#728177;margin-top:16px;padding-top:12px;border-top:1px solid #EEF3EE;">
-                    <span style="display:flex;align-items:center;gap:6px;">
-                        <span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:#1E7A2A;"></span>
-                        Excelente (≥ 90)
-                    </span>
-                    <span style="display:flex;align-items:center;gap:6px;">
-                        <span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:#5FB65B;"></span>
-                        Bom (80-89)
-                    </span>
-                    <span style="display:flex;align-items:center;gap:6px;">
-                        <span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:#E8B23A;"></span>
-                        Atenção (70-79)
-                    </span>
-                    <span style="display:flex;align-items:center;gap:6px;">
-                        <span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:#E67E22;"></span>
-                        Risco (60-69)
-                    </span>
-                    <span style="display:flex;align-items:center;gap:6px;">
-                        <span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:#D64545;"></span>
-                        Crítico (&lt; 60)
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
+                # ── LEGENDA (gerada a partir de faixa(), sem duplicar valores) ──
+                faixas_ref = [(95, '≥ 90'), (85, '80-89'), (75, '70-79'), (65, '60-69'), (30, '< 60')]
+                legenda_html = '<div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.85rem;color:#728177;margin-top:16px;padding-top:12px;border-top:1px solid #EEF3EE;">'
+                for amostra, faixa_txt in faixas_ref:
+                    fx = faixa(amostra)
+                    legenda_html += (
+                        '<span style="display:flex;align-items:center;gap:6px;">'
+                        f'<span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:{fx["cor"]};"></span>'
+                        f'{fx["rot"]} ({faixa_txt})</span>'
+                    )
+                legenda_html += '</div>'
+                st.markdown(legenda_html, unsafe_allow_html=True)
                 
                 # ── EXPORTAR E ATUALIZAR ──
                 st.markdown("---")
@@ -2263,7 +2522,50 @@ with sub_tabs[3]:
                 if m2: return d[:m2.end()].strip()
                 return (d[:150].rstrip() + '…') if len(d) > 150 else d
             
-            texto = re.sub(r'Desenvolvido[^\n]*PariPassu[^\n]*', ' ', conteudo_pdf, flags=re.IGNORECASE)
+            # Teto do número de tópico válido (parte antes do ponto num código "N.N"):
+            # lido do bloco de CRITÉRIOS/RESUMO na 1ª página (antes de qualquer rodapé
+            # de página seguinte, então sempre íntegro). Usado logo abaixo para
+            # separar corretamente o número de versão do código do próximo item, e
+            # de novo mais adiante para filtrar códigos espúrios — sem fixar em 5/6,
+            # o que quebraria em checklists futuros com mais ou menos tópicos.
+            topicos_no_titulo = re.findall(r'\n\s*([1-9])\s*-\s*[A-ZÀ-Ú]', conteudo_pdf[:1500])
+            topico_max = max((int(x) for x in topicos_no_titulo), default=6)
+
+            # Remove o rodapé de cada página (4 linhas: "Desenvolvido por PariPassu® /
+            # Material confidencial / <código> / Versão: X.X...X"). O número de versão
+            # fica colado, sem separador, ao código do próximo item (ex.: "Versão:
+            # 1.2611.4 - Todos os colaboradores..."), e o comprimento desse número
+            # varia entre checklists — por isso não fixamos a quantidade de dígitos:
+            # varremos a partir de cada posição até achar um código "N.N -" plausível
+            # (N dentro do teto de tópicos conhecido) e preservamos só esse código.
+            def _resolver_rodape(m):
+                resto = m.group(1)
+                # Varre todas as posições e guarda cada candidato plausível; o número
+                # de versão em si também "parece" um código válido (ex.: em
+                # "1.2611.4" o prefixo "1.261" passa no teste 1<=1<=6), então o código
+                # real do item — sempre colado ao final da string — é o ÚLTIMO
+                # candidato encontrado, não o primeiro.
+                candidato = None
+                for i in range(len(resto)):
+                    cm = re.match(r'(\d{1,2})\.(\d{1,3})', resto[i:])
+                    if cm and 1 <= int(cm.group(1)) <= topico_max:
+                        candidato = resto[i:i + cm.end()]
+                if candidato:
+                    return ' ' + candidato + ' -'
+                return ' -'  # nenhum código plausível: descarta a versão inteira
+
+            texto = re.sub(
+                r'Desenvolvido\s+por\s+PariPassu[^\n]*\n\s*Material\s+confidencial\s*\n\s*\d+\s*\n\s*'
+                r'Vers[aã]o:\s*(\d[\d.]*)\s*-',
+                _resolver_rodape, conteudo_pdf, flags=re.IGNORECASE
+            )
+            # Remove anexos de fotos ("Fotos das questões do tópico N ...") — eles
+            # reimprimem a pergunta e a nota do item já processado (às vezes mais de
+            # uma vez, uma por foto anexada), o que duplicava o item na extração.
+            texto = re.sub(
+                r'Fotos\s+das\s+quest[oõ]es\s+do\s+t[oó]pico.*?(?=\d[\.\d]*♦|RESULTADOS|\Z)',
+                '\n', texto, flags=re.IGNORECASE | re.DOTALL
+            )
             texto = re.sub(r'\n\s*\d{1,2}\s*\n', '\n', texto)
             
             match_loja = re.search(r'Loja\s*(\d{1,2})\s*-\s*([^\n]+)', texto)
@@ -2310,25 +2612,33 @@ with sub_tabs[3]:
             corpo = texto[pos_result.end():] if pos_result else texto
             padrao_nota_item = re.compile(r'\(\s*(\d+[.,]\d+)\s*/\s*(\d+[.,]\d+)\s*-\s*>\s*([\d.,]+)\s*%\s*\)')
             codigos = list(re.finditer(r'(\d+\.\d+)\s*-\s*', corpo))
-            
+
+            # Teto do número de tópico válido (parte antes do ponto, ex.: o "5" em
+            # "5.3"): usa o maior tópico visto em RESUMO DOS TÓPICOS + margem para a
+            # seção de assinatura, que sempre vem depois. Não fixamos em 5/6 porque
+            # um checklist futuro pode ter mais ou menos tópicos que os atuais.
+            topico_max = max((i + 1 for i, n in enumerate(dados['topicos_nomes']) if n), default=0)
+            teto_topico = max(topico_max + 2, 20)
+
             for n, m in enumerate(codigos):
                 inicio = m.end()
                 fim = codigos[n + 1].start() if n + 1 < len(codigos) else len(corpo)
                 chunk = corpo[inicio:fim]
                 m_nota = padrao_nota_item.search(chunk)
                 if not m_nota: continue
-                
+
                 codigo = m.group(1)
-                
-                # ── CORREÇÃO: VALIDA O CÓDIGO ──
-                # Ignora códigos inválidos como 2642.9, 2653.8, 2675.18
+
+                # ── VALIDA O CÓDIGO ──
+                # Descarta casamentos espúrios da regex genérica \d+\.\d+ (ex.:
+                # números de página ou protocolo como "2642.9") que não são
+                # códigos reais de item do checklist.
                 partes = codigo.split('.')
                 if len(partes) == 2:
                     try:
                         num_principal = int(partes[0])
                         num_secundario = int(partes[1])
-                        # Código válido: 1 a 6 (tópicos) e secundário 1 a 99
-                        if num_principal > 6 or num_secundario > 99:
+                        if num_principal > teto_topico or num_secundario > 99:
                             continue  # Ignora códigos inválidos
                     except:
                         continue
@@ -2348,6 +2658,11 @@ with sub_tabs[3]:
                     s = ln.strip()
                     if not s: continue
                     if '♦' in s: break
+                    # Rodapé de página sem código de item plausível depois dele (ex.:
+                    # o último item do documento, antes da seção de assinatura) não é
+                    # removido no pré-processamento — corta aqui para não grudar no
+                    # texto do nível.
+                    if re.match(r'Desenvolvido\s+por\s+PariPassu', s, re.IGNORECASE): break
                     if re.match(r'Observa[çc][aã]o', s, re.IGNORECASE):
                         obs_item = re.sub(r'^Observa[çc][aã]o:\s*', '', s, flags=re.IGNORECASE).strip()
                         break
@@ -2361,7 +2676,12 @@ with sub_tabs[3]:
                         nivel_num = int(mn.group(1))
                         nivel_txt = re.sub(r'\s+', ' ', mn.group(2)).strip()
                 
-                if nivel_num is not None and nivel_num in NIVEIS_ITEM: nivel_txt = NIVEIS_ITEM[nivel_num]
+                # Só usa o texto genérico da escala 0-5 como fallback: algumas seções
+                # do checklist (ex.: "Estrutura Física") usam uma escala descritiva
+                # própria (ex.: "2 - Muitas não conformidades") que não deve ser
+                # sobrescrita pelo texto padrão das demais seções.
+                if not nivel_txt and nivel_num is not None and nivel_num in NIVEIS_ITEM:
+                    nivel_txt = NIVEIS_ITEM[nivel_num]
                 
                 item = {'codigo': codigo, 'descricao': descricao, 'descricao_curta': descricao_curta, 'obtido': obtido, 'possivel': possivel, 'pct': pct, 'nivel': nivel_num, 'nivel_txt': nivel_txt, 'observacao': obs_item}
                 dados['itens'].append(item)
@@ -2373,6 +2693,12 @@ with sub_tabs[3]:
             
             return dados
         
+        st.markdown(cab_html(
+            "Importar PDF",
+            "Envie o relatório de auditoria em PDF para extrair loja, notas e não conformidades automaticamente.",
+            "⭳",
+        ), unsafe_allow_html=True)
+
         # ── Upload do PDF com key dinâmica ──
         uploaded_file = st.file_uploader(
             "", 
@@ -2486,15 +2812,159 @@ with sub_tabs[3]:
                         pct = st.number_input(label, min_value=0.0, max_value=100.0, value=float(valor_padrao), step=0.5, key=f"pct_import_{i}")
                         pcts.append(pct)
                 
-                st.markdown('<span class="label-destaque">Não Conformidades Críticas</span>', unsafe_allow_html=True)
-                criticas_text = ""
-                if dados_extraidos['criticas']: 
-                    criticas_text = "\n".join(dados_extraidos['criticas'])
-                elif dados_extraidos['observacoes']: 
-                    criticas_text = "\n".join([f"Observação: {obs}" for obs in dados_extraidos['observacoes']])
-                
-                criticas_input = st.text_area("", value=criticas_text, key="import_criticas", placeholder="Uma por linha. Ex: 5.3 — Ausência de mofo, infiltrações ou pragas? (0,16/0,79 → 20.3%) | Nível 1: Existe alguma iniciativa sem formalização.", help="Itens com nível 0-2 (percentual < 60%) são automaticamente identificados", height=240, label_visibility="hidden")
-                
+                # ── POP-BASE DA AUDITORIA ──
+                # O checklist inteiro avalia um POP só; o que muda por item é o ponto
+                # interno (seção, anexo, página).
+                try:
+                    df_pops_todos = load()
+                except Exception:
+                    df_pops_todos = pd.DataFrame()
+
+                pop_base = pop_base_da_frente(df_pops_todos, tipo)
+
+                st.markdown(
+                    '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
+                    'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
+                    'POP avaliado por este checklist</div>',
+                    unsafe_allow_html=True,
+                )
+                if pop_base is not None:
+                    pop_base_id = pop_base.get('id')
+                    pop_base_nome = str(pop_base.get('processo', '')).strip()
+                    pop_base_cod = str(pop_base.get('codigo_2', '')).strip()
+                    st.success(f"**{pop_base_cod}** — {pop_base_nome}")
+                else:
+                    pop_base_id, pop_base_nome, pop_base_cod = None, '', ''
+                    df_frente = listar_processos_por_frente(df_pops_todos, tipo)
+                    base_pool = df_frente if not df_frente.empty else df_pops_todos
+
+                    opcoes = {'— nenhum POP cadastrado para esta frente —': None}
+                    if not base_pool.empty:
+                        for _, row in base_pool.iterrows():
+                            cod = str(row.get('codigo_2', '')).strip()
+                            nome = str(row.get('processo', '')).strip()
+                            if nome:
+                                opcoes[f"{cod} — {nome}" if cod else nome] = row
+
+                    st.caption(
+                        "O POP desta frente ainda não está cadastrado na aba Processos. "
+                        "Escolha o documento correspondente ou deixe sem vínculo."
+                    )
+                    escolha_base = st.selectbox(
+                        "POP de referência", list(opcoes), key="import_pop_base",
+                        label_visibility="collapsed",
+                    )
+                    row_base = opcoes.get(escolha_base)
+                    if row_base is not None:
+                        pop_base_id = row_base.get('id')
+                        pop_base_nome = str(row_base.get('processo', '')).strip()
+                        pop_base_cod = str(row_base.get('codigo_2', '')).strip()
+
+                st.markdown(
+                    '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
+                    'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
+                    'Não Conformidades Críticas</div>'
+                    '<div style="font-size:.8rem;color:#728177;margin:.2rem 0 .6rem;">'
+                    'Itens abaixo de 60%. O ponto do POP vem do próprio enunciado quando ele '
+                    'cita seção, anexo ou página — confira e ajuste se precisar.</div>',
+                    unsafe_allow_html=True,
+                )
+
+                itens_criticos = [i for i in dados_extraidos['itens'] if i['pct'] < 60.0]
+
+                criticas_estruturadas = []
+                if not itens_criticos:
+                    st.success("Nenhum item abaixo de 60% neste PDF.")
+                else:
+                    for item in itens_criticos:
+                        pontos = detectar_pontos_pop(item['descricao'])
+                        selo = "📎 " + " · ".join(pontos[:3]) if pontos else "sem ponto citado"
+
+                        # Criticidade sugerida a partir do próprio pct do item (paridade
+                        # com o HTML: nota mais baixa = mais crítico), sempre editável.
+                        if item['pct'] < 30:
+                            crit_sugerida = 'Alta'
+                        elif item['pct'] < 50:
+                            crit_sugerida = 'Média'
+                        else:
+                            crit_sugerida = 'Baixa'
+
+                        with st.expander(
+                            f"[{item['codigo']}] {item['pct']:.1f}% · {item['descricao_curta'][:80]} — {selo}",
+                            expanded=False,
+                        ):
+                            if item.get('observacao'):
+                                st.caption(f"Observação do auditor: {item['observacao']}")
+                            ponto = st.text_input(
+                                "Ponto do POP divergente",
+                                value=" · ".join(pontos[:3]),
+                                placeholder="Etapa, passo, seção, anexo ou página",
+                                key=f"pop_ponto_{item['codigo']}",
+                            )
+
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                criticidade_item = st.selectbox(
+                                    "Criticidade", ['Alta', 'Média', 'Baixa'],
+                                    index=['Alta', 'Média', 'Baixa'].index(crit_sugerida),
+                                    key=f"pop_crit_{item['codigo']}",
+                                )
+                                status_item = st.selectbox(
+                                    "Status", ['Aberta', 'Em andamento', 'Concluída'],
+                                    key=f"pop_status_{item['codigo']}",
+                                )
+                            with col_b:
+                                responsavel_item = st.text_input(
+                                    "Responsável", key=f"pop_resp_{item['codigo']}",
+                                )
+                                prazo_item = st.date_input(
+                                    "Prazo", value=None, key=f"pop_prazo_{item['codigo']}",
+                                )
+                            acao_item = st.text_area(
+                                "Ação corretiva", key=f"pop_acao_{item['codigo']}", height=70,
+                            )
+
+                        criticas_estruturadas.append({
+                            'texto': (
+                                f"{item['codigo']} — {item['descricao_curta']} "
+                                f"({item['obtido']:.2f}/{item['possivel']:.2f} → {item['pct']:.1f}%)"
+                                + (f" | Nível {item['nivel']}: {item['nivel_txt']}" if item['nivel'] is not None else "")
+                                + (f" | Obs: {item['observacao']}" if item.get('observacao') else "")
+                            ),
+                            'codigo_item': item['codigo'],
+                            'pop_id': pop_base_id,
+                            'pop_nome': pop_base_nome,
+                            'pop_codigo_2': pop_base_cod,
+                            'ponto_pop': ponto.strip(),
+                            'confianca': 'base' if pop_base_nome else None,
+                            'status': status_item,
+                            'criticidade': criticidade_item,
+                            'responsavel': responsavel_item.strip(),
+                            'prazo': prazo_item.strftime('%Y-%m-%d') if prazo_item else '',
+                            'acao_corretiva': acao_item.strip(),
+                            'evidencia': item.get('observacao', '') or '',
+                        })
+
+                    if not pop_base_nome:
+                        st.warning(
+                            f"As {len(criticas_estruturadas)} não conformidade(s) ficarão sem POP "
+                            "vinculado. Dá para salvar assim, mas elas não ficam rastreáveis ao processo."
+                        )
+
+                with st.expander("Editar texto bruto das críticas (avançado)", expanded=False):
+                    st.caption(
+                        "Se preencher aqui, este texto substitui os itens vinculados acima "
+                        "e a auditoria é salva sem vínculo ao POP."
+                    )
+                    criticas_input = st.text_area(
+                        "",
+                        value="",
+                        key="import_criticas_bruto",
+                        placeholder="Uma por linha. Ex: 5.3 — Ausência de mofo, infiltrações ou pragas? (0,16/0,79 → 20.3%)",
+                        height=200,
+                        label_visibility="collapsed",
+                    )
+
                 st.markdown("---")
                 
                 if pcts:
@@ -2506,37 +2976,82 @@ with sub_tabs[3]:
                         <span style="font-size:24px;font-weight:700;color:{f['cor']}">{total_nota:.2f}% — {f['rot']}</span>
                     </div>
                     """, unsafe_allow_html=True)
+
+                    nota_pdf = dados_extraidos.get('nota_total', 0)
+                    if nota_pdf > 0:
+                        diverge = abs(nota_pdf - total_nota) > 0.5
+                        if diverge:
+                            st.warning(
+                                f"⚠️ A nota recalculada ({total_nota:.2f}%) diverge da nota total "
+                                f"impressa no PDF ({nota_pdf:.2f}%) — revise os tópicos antes de salvar."
+                            )
+                        else:
+                            st.caption(f"✓ Confere com a nota total impressa no PDF ({nota_pdf:.2f}%).")
                 
                 # ── BOTÃO ÚNICO (Enter NÃO salva) ──
-                if st.button("Salvar Auditoria", use_container_width=True, type="primary", key="btn_salvar_pdf"):
-                    if not loja or not tipo or not data_audit: 
+                # ── Auditoria já existente para essa loja+frente+data? ──
+                # inserir_auditoria() sempre faz INSERT puro; sem essa checagem,
+                # importar o mesmo PDF duas vezes cria dois registros e as médias
+                # do Painel Geral/Rankings passam a contar a auditoria em dobro.
+                existente_pdf = None
+                if loja and tipo and data_audit:
+                    try:
+                        existente_pdf = buscar_auditoria_existente(
+                            loja.split(' - ')[0], tipo, data_audit.strftime('%Y-%m-%d')
+                        )
+                    except Exception:
+                        existente_pdf = None
+
+                if existente_pdf:
+                    st.warning(
+                        f"⚠️ Já existe uma auditoria salva para esta loja, frente e data "
+                        f"(nota atual: {existente_pdf['total']:.2f}%). Salvar de novo vai "
+                        f"**substituir** o registro existente."
+                    )
+
+                if st.button(
+                    "Substituir Auditoria Existente" if existente_pdf else "Salvar Auditoria",
+                    use_container_width=True, type="primary", key="btn_salvar_pdf",
+                ):
+                    if not loja or not tipo or not data_audit:
                         st.error("Preencha todos os campos obrigatórios.")
-                    elif any(p < 0 or p > 100 for p in pcts): 
+                    elif any(p < 0 or p > 100 for p in pcts):
                         st.error("As notas devem estar entre 0 e 100.")
                     else:
                         cod_loja = loja.split(' - ')[0]
-                        criticas_list = [c.strip() for c in criticas_input.split('\n') if c.strip()]
+                        # Texto bruto (expander avançado) tem prioridade quando preenchido;
+                        # caso contrário salva os itens já vinculados ao POP.
+                        if criticas_input.strip():
+                            criticas_list = [
+                                {**normalizar_critica(c.strip())}
+                                for c in criticas_input.split('\n') if c.strip()
+                            ]
+                        else:
+                            criticas_list = criticas_estruturadas
                         dados_para_salvar = {
-                            'loja': cod_loja, 
-                            'data': data_audit.strftime('%Y-%m-%d'), 
-                            'tipo': tipo, 
-                            'avaliador': avaliador, 
-                            'topicos': [{'nome': CHECKLISTS[tipo]['slots'][i], 'possivel': POSSIVEL[i], 'pct': pcts[i]} for i in range(5)], 
-                            'total': total_nota, 
+                            'loja': cod_loja,
+                            'data': data_audit.strftime('%Y-%m-%d'),
+                            'tipo': tipo,
+                            'avaliador': avaliador,
+                            'topicos': [{'nome': CHECKLISTS[tipo]['slots'][i], 'possivel': POSSIVEL[i], 'pct': pcts[i]} for i in range(5)],
+                            'total': total_nota,
                             'criticas': criticas_list
                         }
                         try:
+                            if existente_pdf:
+                                deletar_auditoria(int(existente_pdf['id']))
                             inserir_auditoria(dados_para_salvar)
-                            st.success(f"✅ Auditoria salva com sucesso! Loja {cod_loja} - {CHECKLISTS[tipo]['nome']}")
+                            msg = "🔄 Auditoria substituída" if existente_pdf else "✅ Auditoria salva"
+                            st.success(f"{msg} com sucesso! Loja {cod_loja} - {CHECKLISTS[tipo]['nome']}")
                             st.cache_data.clear()
-                            
+
                             # ── INCREMENTA A KEY PARA RESETAR O UPLOADER ──
                             st.session_state.uploader_key += 1
-                            
+
                             import time
                             time.sleep(1.5)
-                            st.rerun()  
-                        except Exception as e: 
+                            st.rerun()
+                        except Exception as e:
                             st.error(f"Erro ao salvar no banco: {e}")
             
             except Exception as e:
@@ -2591,8 +3106,11 @@ with sub_tabs[3]:
         </style>
         """, unsafe_allow_html=True)
 
-        st.markdown("### Lançar Auditoria Manual")
-        st.caption("Registre manualmente os dados da auditoria sem necessidade de PDF.")
+        st.markdown(cab_html(
+            "Lançar auditoria manual",
+            "Registre manualmente os dados da auditoria sem necessidade de PDF.",
+            "＋",
+        ), unsafe_allow_html=True)
 
         # ── Inicializa o estado para controle de reset ──
         if "manual_reset" not in st.session_state:
@@ -2641,15 +3159,147 @@ with sub_tabs[3]:
                 )
                 pcts.append(pct)
         
-        st.markdown('<span class="label-destaque">Não Conformidades Críticas</span>', unsafe_allow_html=True)
-        criticas_text = st.text_area(
-            "", 
-            placeholder="Uma por linha. Ex: 5.3 — Praga de ratos nas câmaras (nota 1)",
-            key="manual_criticas",
-            height=200,
-            label_visibility="hidden"
+        # ── POP-BASE DA AUDITORIA ──
+        try:
+            df_pops_manual = load()
+        except Exception:
+            df_pops_manual = pd.DataFrame()
+
+        pop_base_m = pop_base_da_frente(df_pops_manual, tipo)
+        st.markdown(
+            '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
+            'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
+            'POP avaliado por este checklist</div>',
+            unsafe_allow_html=True,
         )
-        
+        if pop_base_m is not None:
+            pop_m_id = pop_base_m.get('id')
+            pop_m_nome = str(pop_base_m.get('processo', '')).strip()
+            pop_m_cod = str(pop_base_m.get('codigo_2', '')).strip()
+            st.success(f"**{pop_m_cod}** — {pop_m_nome}")
+        else:
+            pop_m_id, pop_m_nome, pop_m_cod = None, '', ''
+            df_frente_m = listar_processos_por_frente(df_pops_manual, tipo)
+            pool_m = df_frente_m if not df_frente_m.empty else df_pops_manual
+
+            opcoes_m = {'— nenhum POP cadastrado para esta frente —': None}
+            if not pool_m.empty:
+                for _, row in pool_m.iterrows():
+                    cod = str(row.get('codigo_2', '')).strip()
+                    nome = str(row.get('processo', '')).strip()
+                    if nome:
+                        opcoes_m[f"{cod} — {nome}" if cod else nome] = row
+
+            st.caption(
+                "O POP desta frente ainda não está cadastrado na aba Processos. "
+                "Escolha o documento correspondente ou deixe sem vínculo."
+            )
+            escolha_m = st.selectbox(
+                "POP de referência", list(opcoes_m), key="manual_pop_base",
+                label_visibility="collapsed",
+            )
+            row_m = opcoes_m.get(escolha_m)
+            if row_m is not None:
+                pop_m_id = row_m.get('id')
+                pop_m_nome = str(row_m.get('processo', '')).strip()
+                pop_m_cod = str(row_m.get('codigo_2', '')).strip()
+
+        st.markdown(
+            '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
+            'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
+            'Não Conformidades</div>'
+            '<div style="font-size:.8rem;color:#728177;margin:.2rem 0 .6rem;">'
+            'Cada card vira uma não conformidade rastreável, com POP, status, responsável e prazo.</div>',
+            unsafe_allow_html=True,
+        )
+
+        if "manual_ncs" not in st.session_state:
+            st.session_state.manual_ncs = []
+
+        # ── POOL de POPs para o select de cada card (mesmo filtro por frente já usado acima) ──
+        df_frente_ncs = listar_processos_por_frente(df_pops_manual, tipo)
+        pool_ncs = df_frente_ncs if not df_frente_ncs.empty else df_pops_manual
+        opcoes_pop_ncs = {'— herdar POP do checklist acima —': 'HERDAR', '— sem vínculo —': None}
+        if not pool_ncs.empty:
+            for _, row in pool_ncs.iterrows():
+                cod = str(row.get('codigo_2', '')).strip()
+                nome = str(row.get('processo', '')).strip()
+                if nome:
+                    opcoes_pop_ncs[f"{cod} — {nome}" if cod else nome] = row
+
+        for idx, nc_card in enumerate(st.session_state.manual_ncs):
+            with st.container(border=True):
+                col_h1, col_h2 = st.columns([5, 1])
+                with col_h1:
+                    st.markdown(f"**Não conformidade {idx + 1}**")
+                with col_h2:
+                    if st.button("✕ Remover", key=f"nc_remove_{idx}"):
+                        st.session_state.manual_ncs.pop(idx)
+                        st.rerun()
+
+                nc_card['texto'] = st.text_area(
+                    "Descrição", value=nc_card.get('texto', ''),
+                    placeholder="Ex: 5.3 — Praga de ratos nas câmaras",
+                    key=f"nc_texto_{idx}", height=70,
+                )
+                col1n, col2n, col3n = st.columns(3)
+                with col1n:
+                    nc_card['codigo_item'] = st.text_input(
+                        "Código do item (opcional)", value=nc_card.get('codigo_item', ''),
+                        key=f"nc_cod_{idx}",
+                    )
+                    nc_card['criticidade'] = st.selectbox(
+                        "Criticidade", ['Alta', 'Média', 'Baixa'],
+                        index=['Alta', 'Média', 'Baixa'].index(nc_card.get('criticidade') or 'Média'),
+                        key=f"nc_crit_{idx}",
+                    )
+                with col2n:
+                    nc_card['status'] = st.selectbox(
+                        "Status", ['Aberta', 'Em andamento', 'Concluída'],
+                        index=['Aberta', 'Em andamento', 'Concluída'].index(nc_card.get('status') or 'Aberta'),
+                        key=f"nc_status_{idx}",
+                    )
+                    nc_card['responsavel'] = st.text_input(
+                        "Responsável", value=nc_card.get('responsavel', ''), key=f"nc_resp_{idx}",
+                    )
+                with col3n:
+                    escolha_pop_nc = st.selectbox(
+                        "Documento (POP)", list(opcoes_pop_ncs), key=f"nc_pop_{idx}",
+                    )
+                    prazo_default = None
+                    if nc_card.get('prazo'):
+                        try:
+                            prazo_default = datetime.strptime(nc_card['prazo'], '%Y-%m-%d')
+                        except Exception:
+                            prazo_default = None
+                    prazo_nc = st.date_input("Prazo", value=prazo_default, key=f"nc_prazo_{idx}")
+                    nc_card['prazo'] = prazo_nc.strftime('%Y-%m-%d') if prazo_nc else ''
+
+                nc_card['ponto_pop'] = st.text_input(
+                    "Ponto do POP divergente", value=nc_card.get('ponto_pop', ''),
+                    placeholder="Etapa, passo, seção, anexo ou página", key=f"nc_ponto_{idx}",
+                )
+                nc_card['acao_corretiva'] = st.text_area(
+                    "Ação corretiva", value=nc_card.get('acao_corretiva', ''),
+                    key=f"nc_acao_{idx}", height=70,
+                )
+
+                # Resolve o vínculo de POP escolhido (herdar do checklist / linha específica / nenhum)
+                row_pop_nc = opcoes_pop_ncs.get(escolha_pop_nc)
+                if row_pop_nc == 'HERDAR':
+                    nc_card['pop_id'], nc_card['pop_nome'], nc_card['pop_codigo_2'] = pop_m_id, pop_m_nome, pop_m_cod
+                elif row_pop_nc is not None:
+                    nc_card['pop_id'] = row_pop_nc.get('id')
+                    nc_card['pop_nome'] = str(row_pop_nc.get('processo', '')).strip()
+                    nc_card['pop_codigo_2'] = str(row_pop_nc.get('codigo_2', '')).strip()
+                else:
+                    nc_card['pop_id'], nc_card['pop_nome'], nc_card['pop_codigo_2'] = None, '', ''
+                nc_card['confianca'] = 'base' if nc_card['pop_nome'] else None
+
+        if st.button("➕ Adicionar não conformidade", key="manual_nc_add"):
+            st.session_state.manual_ncs.append({'status': 'Aberta', 'criticidade': 'Média'})
+            st.rerun()
+
         st.markdown("---")
         
         # ── CÁLCULO DA NOTA ──
@@ -2666,15 +3316,35 @@ with sub_tabs[3]:
             </div>
             """, unsafe_allow_html=True)
         
+        # ── Auditoria já existente para essa loja+frente+data? ──
+        existente_manual = None
+        try:
+            data_check = datetime.strptime(data_audit_str, '%d/%m/%Y')
+            existente_manual = buscar_auditoria_existente(
+                loja.split(' - ')[0], tipo, data_check.strftime('%Y-%m-%d')
+            )
+        except Exception:
+            existente_manual = None
+
+        if existente_manual:
+            st.warning(
+                f"⚠️ Já existe uma auditoria salva para esta loja, frente e data "
+                f"(nota atual: {existente_manual['total']:.2f}%). Salvar de novo vai "
+                f"**substituir** o registro existente."
+            )
+
         # ── BOTÃO (Enter NÃO salva porque não está dentro de um form) ──
-        if st.button("Salvar Auditoria", use_container_width=True, type="primary", key="btn_salvar_manual"):
+        if st.button(
+            "Substituir Auditoria Existente" if existente_manual else "Salvar Auditoria",
+            use_container_width=True, type="primary", key="btn_salvar_manual",
+        ):
             # VALIDA E SALVA DIRETO
             try:
                 data_audit = datetime.strptime(data_audit_str, '%d/%m/%Y')
             except:
                 st.error("Formato de data inválido. Use DD/MM/AAAA")
                 st.stop()
-            
+
             if not loja or not tipo:
                 st.error("Preencha todos os campos obrigatórios.")
                 st.stop()
@@ -2683,8 +3353,12 @@ with sub_tabs[3]:
                 st.stop()
             else:
                 cod_loja = loja.split(' - ')[0]
-                criticas_list = [c.strip() for c in criticas_text.split('\n') if c.strip()]
-                
+                criticas_list = [
+                    {**CRITICA_CAMPOS, **nc}
+                    for nc in st.session_state.manual_ncs
+                    if (nc.get('texto') or '').strip()
+                ]
+
                 dados_para_salvar = {
                     'loja': cod_loja,
                     'data': data_audit.strftime('%Y-%m-%d'),
@@ -2699,10 +3373,13 @@ with sub_tabs[3]:
                 }
                 
                 try:
+                    if existente_manual:
+                        deletar_auditoria(int(existente_manual['id']))
                     inserir_auditoria(dados_para_salvar)
-                    st.success(f"✅ Auditoria salva com sucesso! Loja {cod_loja} - {CHECKLISTS[tipo]['nome']}")
+                    msg = "🔄 Auditoria substituída" if existente_manual else "✅ Auditoria salva"
+                    st.success(f"{msg} com sucesso! Loja {cod_loja} - {CHECKLISTS[tipo]['nome']}")
                     st.cache_data.clear()
-                    
+
                     # ── MARCA PARA RESETAR OS CAMPOS ──
                     st.session_state.manual_reset = True
                     
@@ -2716,21 +3393,179 @@ with sub_tabs[3]:
         if st.session_state.manual_reset:
             st.session_state.manual_reset = False
             # Limpa os campos do session_state
-            for key in ["manual_loja", "manual_tipo", "manual_data", "manual_avaliador", "manual_criticas"]:
+            for key in ["manual_loja", "manual_tipo", "manual_data", "manual_avaliador"]:
                 if key in st.session_state:
                     del st.session_state[key]
             for i in range(5):
                 key = f"pct_manual_{i}"
                 if key in st.session_state:
                     del st.session_state[key]
+            st.session_state.manual_ncs = []
             st.rerun()
-    
-       # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 9 - HISTÓRICO
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SUB-ABA 9 - NÃO CONFORMIDADES
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[8]:
-        st.markdown("### Histórico de Auditorias")
-        st.caption("Todas as auditorias registradas.")
+        st.markdown(cab_html(
+            "Não conformidades",
+            "Ciclo de vida completo das NCs registradas: status, responsável, prazo e ação corretiva.",
+            "✕",
+        ), unsafe_allow_html=True)
+
+        if df_auditorias.empty:
+            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
+        else:
+            ncs_all = todas_ncs(df_auditorias)
+
+            if not ncs_all:
+                st.info("Nenhuma não conformidade registrada ainda.")
+            else:
+                ncs_abertas_all = [n for n in ncs_all if n.get('status') != 'Concluída']
+                ncs_vencidas_all = [n for n in ncs_abertas_all if vencida(n)]
+                ncs_alta_all = [n for n in ncs_abertas_all if n.get('criticidade') == 'Alta']
+                ncs_sem_pop_all = [n for n in ncs_abertas_all if not (n.get('pop_nome') or '').strip()]
+
+                # ── KPIs ──
+                k1, k2, k3, k4 = st.columns(4)
+                for col, rot, num, cor_kpi in [
+                    (k1, 'Em aberto', len(ncs_abertas_all), '#D64545' if ncs_abertas_all else '#1E7A2A'),
+                    (k2, 'Prazo vencido', len(ncs_vencidas_all), '#D64545' if ncs_vencidas_all else '#1E7A2A'),
+                    (k3, 'Criticidade alta', len(ncs_alta_all), '#D64545' if ncs_alta_all else '#1E7A2A'),
+                    (k4, 'Sem rastreio ao POP', len(ncs_sem_pop_all), '#D64545' if ncs_sem_pop_all else '#1E7A2A'),
+                ]:
+                    with col:
+                        st.markdown(f"""
+                        <div class="aud-card aud-kpi">
+                            <div class="rot">{rot}</div>
+                            <div class="num">{num}</div>
+                            <div class="faixa"><i style="width:100%;background:{cor_kpi}"></i></div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── FILTROS ──
+                fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
+                with fc1:
+                    f_loja = st.selectbox("Loja", ["Todas"] + sorted({n['_loja'] for n in ncs_all if n.get('_loja')}), key="nc_f_loja")
+                with fc2:
+                    f_tipo = st.selectbox("Frente", ["Todas"] + list(CHECKLISTS.keys()),
+                                           format_func=lambda x: CHECKLISTS[x]['nome'] if x in CHECKLISTS else x, key="nc_f_tipo")
+                with fc3:
+                    f_crit = st.selectbox("Criticidade", ["Todas", "Alta", "Média", "Baixa"], key="nc_f_crit")
+                with fc4:
+                    f_status = st.selectbox("Status", ["Todas", "Aberta", "Em andamento", "Concluída"], key="nc_f_status")
+                with fc5:
+                    f_pop = st.selectbox("Rastreio ao POP", ["Todas", "Com POP", "Sem POP"], key="nc_f_pop")
+                with fc6:
+                    f_venc = st.selectbox("Prazo", ["Todas", "Vencidas"], key="nc_f_venc")
+
+                ncs_filtradas = ncs_all
+                if f_loja != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if n.get('_loja') == f_loja]
+                if f_tipo != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if n.get('_tipo') == f_tipo]
+                if f_crit != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if n.get('criticidade') == f_crit]
+                if f_status != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if (n.get('status') or 'Aberta') == f_status]
+                if f_pop == "Com POP":
+                    ncs_filtradas = [n for n in ncs_filtradas if (n.get('pop_nome') or '').strip()]
+                elif f_pop == "Sem POP":
+                    ncs_filtradas = [n for n in ncs_filtradas if not (n.get('pop_nome') or '').strip()]
+                if f_venc == "Vencidas":
+                    ncs_filtradas = [n for n in ncs_filtradas if vencida(n)]
+
+                st.caption(f"{len(ncs_filtradas)} não conformidade(s) no recorte atual.")
+
+                # ── EXPORTAR CSV DAS NCs FILTRADAS ──
+                if ncs_filtradas:
+                    df_export_nc = pd.DataFrame([{
+                        'Loja': n.get('_loja'), 'Frente': CHECKLISTS.get(n.get('_tipo'), {}).get('nome', n.get('_tipo')),
+                        'Data auditoria': n.get('_data'), 'Item': n.get('codigo_item'), 'Descrição': n.get('texto'),
+                        'POP': n.get('pop_nome'), 'Ponto do POP': n.get('ponto_pop'), 'Criticidade': n.get('criticidade'),
+                        'Status': n.get('status'), 'Responsável': n.get('responsavel'), 'Prazo': n.get('prazo'),
+                        'Ação corretiva': n.get('acao_corretiva'),
+                    } for n in ncs_filtradas])
+                    st.download_button(
+                        "📊 Exportar NCs filtradas (CSV)", data=df_export_nc.to_csv(index=False, sep=';'),
+                        file_name=f"nao_conformidades_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv", key="export_csv_ncs",
+                    )
+
+                st.markdown("---")
+
+                # ── CARTÕES EDITÁVEIS ──
+                for i, nc in enumerate(ncs_filtradas):
+                    frente_nome = CHECKLISTS.get(nc.get('_tipo'), {}).get('nome', nc.get('_tipo'))
+                    atrasada = vencida(nc)
+                    cor_crit = {'Alta': '#D64545', 'Média': '#E8B23A', 'Baixa': '#728177'}.get(nc.get('criticidade'), '#728177')
+                    titulo = f"[{nc.get('_loja')}] {frente_nome} · {nc.get('codigo_item') or '—'} — {(nc.get('texto') or '')[:70]}"
+                    if atrasada:
+                        titulo = "⚠ " + titulo
+
+                    with st.expander(titulo, expanded=False):
+                        st.markdown(f"**Frente:** {frente_nome} · **Loja:** {nc.get('_loja')} · **Data da auditoria:** {nc.get('_data')}")
+                        st.markdown(nc.get('texto') or '')
+                        pop_txt = nc.get('pop_nome') or '— sem vínculo —'
+                        if nc.get('pop_codigo_2'):
+                            pop_txt = f"{nc['pop_codigo_2']} — {pop_txt}"
+                        if nc.get('ponto_pop'):
+                            pop_txt += f" ({nc['ponto_pop']})"
+                        st.caption(f"POP: {pop_txt}")
+
+                        key_base = f"ncedit_{nc['_auditoria_id']}_{nc['_idx']}"
+                        ce1, ce2, ce3 = st.columns(3)
+                        with ce1:
+                            novo_status = st.selectbox(
+                                "Status", ['Aberta', 'Em andamento', 'Concluída'],
+                                index=['Aberta', 'Em andamento', 'Concluída'].index(nc.get('status') or 'Aberta'),
+                                key=f"{key_base}_status",
+                            )
+                        with ce2:
+                            novo_resp = st.text_input("Responsável", value=nc.get('responsavel', ''), key=f"{key_base}_resp")
+                        with ce3:
+                            prazo_atual = None
+                            if nc.get('prazo'):
+                                try:
+                                    prazo_atual = datetime.strptime(nc['prazo'], '%Y-%m-%d')
+                                except Exception:
+                                    prazo_atual = None
+                            novo_prazo = st.date_input("Prazo", value=prazo_atual, key=f"{key_base}_prazo")
+                        nova_acao = st.text_area("Ação corretiva", value=nc.get('acao_corretiva', ''), key=f"{key_base}_acao", height=70)
+
+                        if st.button("💾 Salvar alterações", key=f"{key_base}_save"):
+                            aud_id = int(nc['_auditoria_id'])
+                            row_aud = df_auditorias[df_auditorias['id'] == aud_id]
+                            if row_aud.empty:
+                                st.error("Auditoria de origem não encontrada.")
+                            else:
+                                criticas_originais = row_aud.iloc[0]['criticas']
+                                criticas_norm = [normalizar_critica(c) for c in criticas_originais]
+                                idx_nc = nc['_idx']
+                                if idx_nc < len(criticas_norm):
+                                    criticas_norm[idx_nc]['status'] = novo_status
+                                    criticas_norm[idx_nc]['responsavel'] = novo_resp.strip()
+                                    criticas_norm[idx_nc]['prazo'] = novo_prazo.strftime('%Y-%m-%d') if novo_prazo else ''
+                                    criticas_norm[idx_nc]['acao_corretiva'] = nova_acao.strip()
+                                    try:
+                                        atualizar_auditoria(aud_id, criticas_norm)
+                                        st.success("Não conformidade atualizada.")
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Erro ao salvar: {e}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SUB-ABA 10 - HISTÓRICO
+    # ═══════════════════════════════════════════════════════════════════
+    with sub_tabs[9]:
+        st.markdown(cab_html(
+            "Histórico de auditorias",
+            "Todas as auditorias registradas.",
+            "☰",
+        ), unsafe_allow_html=True)
         
         # ── VERIFICA SE HÁ DADOS ──
         if df_auditorias.empty:
@@ -2972,8 +3807,180 @@ with sub_tabs[3]:
                         st.rerun()
             else:
                 st.info("Nenhum registro com os filtros selecionados.")
-                    
-                    
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SUB-ABA 11 - DADOS & EXPORTAÇÃO
+    # ═══════════════════════════════════════════════════════════════════
+    with sub_tabs[10]:
+        st.markdown(cab_html(
+            "Dados e exportação",
+            "Situação do armazenamento, exportações para Excel e consolidação entre auditores.",
+            "⛁",
+        ), unsafe_allow_html=True)
+
+        n_aud = len(df_auditorias)
+        n_lojas_aud = df_auditorias['loja'].nunique() if not df_auditorias.empty and 'loja' in df_auditorias.columns else 0
+        n_ncs = int(df_auditorias['criticas'].apply(len).sum()) if not df_auditorias.empty and 'criticas' in df_auditorias.columns else 0
+
+        st.markdown(f"""
+        <div style="background:#EFFAF0;border:1px solid #BFE6C2;border-left:4px solid #1E7A2A;border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:16px;display:flex;gap:10px;">
+            <span style="font-size:18px;">✓</span>
+            <div><b>Base compartilhada (Supabase).</b> Toda auditoria registrada aqui fica gravada na base da equipe
+            e aparece para quem abrir o painel em qualquer computador, com atualização ao vivo.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_exp, col_imp = st.columns(2)
+
+        with col_exp:
+            st.markdown('<div class="aud-card"><h3>Exportar</h3>', unsafe_allow_html=True)
+            st.caption("Os CSVs abrem direto no Excel com separador ponto e vírgula.")
+
+            if df_auditorias.empty:
+                st.info("Nenhuma auditoria para exportar ainda.")
+            else:
+                csv_auditorias = df_auditorias.drop(columns=['nivel'], errors='ignore').to_csv(index=False, sep=';')
+
+                linhas_nc = []
+                for _, row in df_auditorias.iterrows():
+                    if isinstance(row.get('criticas'), list):
+                        for c in row['criticas']:
+                            cn = normalizar_critica(c)
+                            linhas_nc.append({
+                                'loja': row['loja'],
+                                'loja_nome': dict(LOJAS).get(row['loja'], ''),
+                                'frente': CHECKLISTS.get(row['tipo'], {}).get('nome', row['tipo']),
+                                'data_auditoria': row['data'],
+                                'item_checklist': cn['codigo_item'],
+                                'nao_conformidade': cn['texto'],
+                                'pop_codigo': cn['pop_codigo_2'],
+                                'pop_nome': cn['pop_nome'],
+                                'ponto_pop': cn['ponto_pop'],
+                            })
+                df_nc = pd.DataFrame(linhas_nc)
+                csv_ncs = df_nc.to_csv(index=False, sep=';') if not df_nc.empty else (
+                    "loja;loja_nome;frente;data_auditoria;item_checklist;"
+                    "nao_conformidade;pop_codigo;pop_nome;ponto_pop\n"
+                )
+
+                json_base = df_auditorias.drop(columns=['nivel'], errors='ignore').to_json(orient='records', force_ascii=False, indent=1)
+
+                st.download_button("Auditorias (CSV)", data=csv_auditorias,
+                    file_name=f"auditorias_ferreira_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv", use_container_width=True, key="dados_export_auditorias_csv")
+                st.download_button("Não conformidades (CSV)", data=csv_ncs,
+                    file_name=f"nao_conformidades_ferreira_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv", use_container_width=True, key="dados_export_ncs_csv")
+                st.download_button("Base completa (JSON)", data=json_base,
+                    file_name=f"base_auditorias_ferreira_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
+                    mime="application/json", use_container_width=True, key="dados_export_json")
+
+                st.caption(f"{n_aud} auditorias · {n_ncs} não conformidades · {n_lojas_aud} loja(s)")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col_imp:
+            st.markdown('<div class="aud-card"><h3>Importar</h3>', unsafe_allow_html=True)
+            st.caption("Cole o JSON exportado de outro painel ou backup. Registros com a mesma loja, "
+                       "frente e data são atualizados; os demais são acrescentados.")
+
+            imp_txt = st.text_area("", placeholder="Cole aqui o JSON exportado", height=160,
+                                    key="dados_import_txt", label_visibility="collapsed")
+
+            if st.button("Importar e consolidar", type="primary", use_container_width=True, key="dados_import_btn"):
+                import json as _json
+                if not imp_txt.strip():
+                    st.error("Cole o conteúdo do arquivo JSON antes de importar.")
+                else:
+                    try:
+                        dados_json = _json.loads(imp_txt)
+                    except Exception:
+                        st.error("O conteúdo colado não é um JSON válido.")
+                        dados_json = None
+
+                    if dados_json is not None:
+                        lista = dados_json if isinstance(dados_json, list) else dados_json.get('audits', [])
+                        if not isinstance(lista, list):
+                            st.error("O JSON não contém uma lista de auditorias.")
+                        else:
+                            campos_obrig = {'loja', 'data', 'tipo', 'total', 'topicos', 'criticas'}
+                            invalidos = [r for r in lista if not campos_obrig.issubset(set(r.keys()))]
+                            if invalidos:
+                                st.error(f"{len(invalidos)} registro(s) sem os campos obrigatórios "
+                                         f"({', '.join(sorted(campos_obrig))}) foram ignorados.")
+                                lista = [r for r in lista if r not in invalidos]
+
+                            novos, substituidos = 0, 0
+                            erros = []
+                            for r in lista:
+                                try:
+                                    existe = df_auditorias[
+                                        (df_auditorias['loja'].astype(str) == str(r['loja'])) &
+                                        (df_auditorias['tipo'] == r['tipo']) &
+                                        (df_auditorias['data'] == r['data'])
+                                    ] if not df_auditorias.empty else pd.DataFrame()
+
+                                    if not existe.empty:
+                                        deletar_auditoria(int(existe.iloc[0]['id']))
+                                        substituidos += 1
+                                    else:
+                                        novos += 1
+
+                                    inserir_auditoria({
+                                        'loja': str(r['loja']),
+                                        'data': r['data'],
+                                        'tipo': r['tipo'],
+                                        'avaliador': r.get('avaliador', 'Auditor Controladoria'),
+                                        'topicos': r.get('topicos', []),
+                                        'total': r.get('total', 0),
+                                        'criticas': r.get('criticas', []),
+                                    })
+                                except Exception as e:
+                                    erros.append(str(e))
+
+                            st.cache_data.clear()
+                            if novos or substituidos:
+                                st.success(f"✅ {novos} auditoria(s) adicionada(s) e {substituidos} atualizada(s).")
+                            if erros:
+                                st.error(f"{len(erros)} registro(s) falharam ao salvar: {erros[0]}")
+                            if novos or substituidos:
+                                import time
+                                time.sleep(1.5)
+                                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── RÉGUA DE CLASSIFICAÇÃO (idêntica à usada nos cálculos do painel) ──
+        st.markdown('<div class="aud-card"><h3>Régua de classificação aplicada '
+                     '<span style="font-size:11px;color:#728177;font-weight:500">idêntica à dos checklists</span></h3>',
+                     unsafe_allow_html=True)
+
+        faixas_regua = [
+            (90, 100, 'Excelente', '#1E7A2A', 'Mínimo', 'Expansão — disseminar o modelo para outras lojas'),
+            (80, 89,  'Bom',       '#5FB65B', 'Baixo',  'Melhoria contínua — revisão mensal dos gaps'),
+            (70, 79,  'Atenção',   '#E8B23A', 'Médio',  'Prioritária — plano de ação em 60 dias'),
+            (60, 69,  'Risco',     '#E67E22', 'Alto',   'Urgente — plano estrutural em até 30 dias'),
+            (0,  59,  'Crítico',   '#D64545', 'Crítico','Imediata — intervenção emergencial'),
+        ]
+        linhas_regua = "".join(f"""
+            <tr>
+                <td style="padding:10px;border-bottom:1px solid #eef3ee;"><b>{ini}–{fim}%</b></td>
+                <td style="padding:10px;border-bottom:1px solid #eef3ee;">
+                    <span class="aud-selo" style="background:{hex_}">{rot}</span>
+                </td>
+                <td style="padding:10px;border-bottom:1px solid #eef3ee;">{risco}</td>
+                <td style="padding:10px;border-bottom:1px solid #eef3ee;font-size:12.5px;">{prio}</td>
+            </tr>""" for ini, fim, rot, hex_, risco, prio in faixas_regua)
+
+        st.markdown(f"""
+        <div class="aud-heat">
+        <table>
+            <thead><tr><th>Score</th><th>Classificação</th><th>Risco</th><th>Prioridade de atuação</th></tr></thead>
+            <tbody>{linhas_regua}</tbody>
+        </table>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""

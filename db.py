@@ -3,6 +3,7 @@ db.py — Conector Supabase | Central de Processos FFF
 Nomes de colunas espelho exato da tabela 'processos' no Supabase.
 """
 
+import json
 import requests
 import streamlit as st
 import pandas as pd
@@ -207,6 +208,112 @@ def filter_opts(df: pd.DataFrame, col_key: str) -> list:
         return ["Todos"]
     vals = sorted({str(v).strip() for v in df[col_key].dropna() if str(v).strip()})
     return ["Todos"] + vals
+
+
+# ── Vínculo entre auditoria e POP ─────────────────────────────────────────────
+
+# Opções fixas de "documento de referência" quando a divergência não aponta pra um
+# POP formal — mesma semântica do POPS_COMUNS do protótipo HTML.
+POPS_COMUNS = [
+    "GAP — processo crítico sem POP definido",
+    "Além do POP — governança e maturidade",
+]
+
+# Macroprocessos plausíveis para cada frente de auditoria. O filtro é proposital-
+# mente frouxo: serve só para encurtar a lista no seletor, e a UI sempre oferece
+# "ver todos os POPs" — nenhum POP válido fica inacessível por causa dele.
+FRENTE_MACROPROCESSOS = {
+    "AÇO-AUD-01": ["Segurança de Alimentos e Qualidade"],
+    "FRE-AUD-02": ["Operações de Loja e Atendimento", "Gestão de Riscos e Prevenção de Perdas"],
+    "REC-AUD-03": ["Logística de Entrada", "Gestão de Riscos e Prevenção de Perdas"],
+}
+
+# Cada checklist avalia um POP-base — o checklist é a nota de cada passo desse POP.
+# Aqui fica só o código do documento (coluna "Código_2"); nome e id vêm do banco, para
+# não duplicar dado que já está cadastrado na aba Processos.
+# O POP de operação do Açougue ainda não está cadastrado, então a frente fica sem
+# base automática até que ele exista — aí passa a funcionar sozinha.
+FRENTE_POP_BASE = {
+    "AÇO-AUD-01": None,
+    "FRE-AUD-02": "POP-3-OPL-3.25",
+    "REC-AUD-03": "POP-2-LGE-2.1",
+}
+
+
+def _codigo_comparavel(valor) -> str:
+    """Normaliza o código do POP para comparação (o banco tem 'POP -15-GPD-15.1')."""
+    return re.sub(r'[\s-]', '', str(valor or '')).upper()
+
+
+def pop_base_da_frente(df_processos: pd.DataFrame, tipo_checklist: str):
+    """Registro do POP-base que o checklist avalia, ou None se não cadastrado."""
+    codigo = FRENTE_POP_BASE.get(tipo_checklist)
+    if not codigo or df_processos.empty or "codigo_2" not in df_processos.columns:
+        return None
+
+    alvo = _codigo_comparavel(codigo)
+    for _, row in df_processos.iterrows():
+        if _codigo_comparavel(row.get("codigo_2")) == alvo:
+            return row
+    return None
+
+CRITICA_CAMPOS = {
+    "texto": "",
+    "codigo_item": "",
+    "pop_id": None,
+    "pop_nome": "",
+    "pop_codigo_2": "",
+    "ponto_pop": "",
+    "confianca": None,
+    # ── ciclo de vida da não conformidade (paridade com o HTML de referência) ──
+    "status": "Aberta",
+    "criticidade": "",
+    "responsavel": "",
+    "prazo": "",
+    "acao_corretiva": "",
+    "evidencia": "",
+    "impacto_operacional": [],
+}
+
+
+def listar_processos_por_frente(df_processos: pd.DataFrame, tipo_checklist: str) -> pd.DataFrame:
+    """POPs cujo macroprocesso é plausível para a frente auditada.
+
+    DataFrame vazio (não erro) quando nada bate, para a UI cair no fallback de
+    listar todos os processos.
+    """
+    macros = FRENTE_MACROPROCESSOS.get(tipo_checklist, [])
+    if df_processos.empty or not macros or "macroprocesso" not in df_processos.columns:
+        return pd.DataFrame()
+
+    padrao = "|".join(re.escape(m) for m in macros)
+    filtrado = df_processos[
+        df_processos["macroprocesso"].astype(str).str.contains(padrao, case=False, na=False)
+    ]
+    return filtrado
+
+
+def normalizar_critica(c) -> dict:
+    """Devolve sempre o dict completo da não conformidade.
+
+    Aceita as três formas que aparecem na prática: o dict já montado, a string
+    simples das auditorias antigas e a string JSON — a coluna `criticas` é
+    text[] no banco, então cada dict gravado volta serializado.
+    """
+    if isinstance(c, dict):
+        return {**CRITICA_CAMPOS, **c}
+
+    texto = str(c)
+    if texto.lstrip().startswith("{"):
+        try:
+            dados = json.loads(texto)
+            if isinstance(dados, dict):
+                return {**CRITICA_CAMPOS, **dados}
+        except (ValueError, TypeError):
+            pass
+    return {**CRITICA_CAMPOS, "texto": texto}
+
+
 # ── LGPD ─────────────────────────────────────────────────────────────────────
 
 def usuario_aceitou_lgpd(usuario: str) -> bool:
@@ -272,6 +379,23 @@ def listar_auditorias(loja: str = None, tipo: str = None) -> pd.DataFrame:
     return df
 
 
+def buscar_auditoria_existente(loja: str, tipo: str, data: str):
+    """Verifica se já existe uma auditoria para essa loja+frente+data. Retorna o
+    registro (dict com id, total etc.) ou None. inserir_auditoria() sempre faz
+    INSERT puro — sem essa checagem, salvar duas vezes a mesma loja/frente/data
+    cria dois registros e as médias do Painel Geral/Rankings contam a auditoria
+    em dobro."""
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/auditorias?loja=eq.{loja}&tipo=eq.{tipo}&data=eq.{data}&select=id,total",
+        headers=HEADERS,
+        timeout=20,
+    )
+    if not resp.ok:
+        return None
+    data_resp = resp.json()
+    return data_resp[0] if data_resp else None
+
+
 def inserir_auditoria(dados: dict) -> dict:
     """Insere uma nova auditoria no Supabase."""
     # Prepara o payload
@@ -282,7 +406,12 @@ def inserir_auditoria(dados: dict) -> dict:
         "avaliador": dados.get("avaliador", "Auditor Controladoria"),
         "topicos": dados.get("topicos", []),
         "total": dados.get("total", 0),
-        "criticas": dados.get("criticas", [])
+        # `criticas` é text[] no banco: serializa o dict aqui para não depender da
+        # conversão implícita do Postgres (normalizar_critica desfaz na leitura).
+        "criticas": [
+            json.dumps(c, ensure_ascii=False) if isinstance(c, dict) else c
+            for c in dados.get("criticas", [])
+        ],
     }
     
     resp = requests.post(
@@ -294,6 +423,28 @@ def inserir_auditoria(dados: dict) -> dict:
     if not resp.ok:
         raise requests.HTTPError(f"{resp.status_code} — {resp.text[:300]}", response=resp)
     return resp.json()
+
+
+def atualizar_auditoria(auditoria_id: int, criticas: list) -> None:
+    """Regrava o array `criticas` de uma auditoria já salva (PATCH parcial).
+
+    Usado pela sub-aba de Não conformidades para editar status/responsável/
+    prazo/ação corretiva de uma NC sem duplicar o registro da auditoria.
+    """
+    payload = {
+        "criticas": [
+            json.dumps(c, ensure_ascii=False) if isinstance(c, dict) else c
+            for c in criticas
+        ],
+    }
+    resp = requests.patch(
+        f"{SUPABASE_URL}/rest/v1/auditorias?id=eq.{auditoria_id}",
+        headers=HEADERS,
+        json=payload,
+        timeout=20,
+    )
+    if not resp.ok:
+        raise requests.HTTPError(f"{resp.status_code} — {resp.text[:300]}", response=resp)
 
 
 def deletar_auditoria(auditoria_id: int) -> None:
