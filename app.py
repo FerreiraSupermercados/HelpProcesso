@@ -788,23 +788,6 @@ with tabs[3]:
         5: {'rot': 'Excelência', 'fx': '90–100', 'hex': '#1E7A2A', 'desc': 'Monitorado e em evolução.'}
     }
     
-    TEMAS = [
-        {'tag': 'Painéis, anexos e gestão visual não afixados', 'kw': ['painel', 'anexo', 'gestão visual', 'quadros']},
-        {'tag': 'Plano de ação inexistente ou informal', 'kw': ['plano de ação', 'plano de acao']},
-        {'tag': 'POP vigente não afixado nos pontos', 'kw': ['pop', 'vigente', 'plastificad']},
-        {'tag': 'Indicadores / KPIs não monitorados', 'kw': ['indicador', 'kpi', 'metas', 'métricas']},
-        {'tag': 'Pragas e estrutura física deteriorada', 'kw': ['praga', 'rato', 'mofo', 'infiltra', 'ferrugem']},
-        {'tag': 'Controle de temperatura manual/frágil', 'kw': ['temperatura', 'sensor', 'câmara']},
-        {'tag': 'Reuniões de alinhamento não realizadas', 'kw': ['reunião', 'alinhamento']},
-        {'tag': 'Integração e reciclagem de equipe frágeis', 'kw': ['integração', 'reciclagem', 'treina']},
-        {'tag': 'Registros manuais / dupla digitação', 'kw': ['manual', 'caderno', 'dupla entrada']},
-        {'tag': 'Falha de rotina no caixa', 'kw': ['cpf', 'sangria']}
-    ]
-    
-    def tags_de(texto):
-        texto_lower = texto.lower()
-        return [t['tag'] for t in TEMAS if any(k in texto_lower for k in t['kw'])]
-
     # ── PONTO DO POP CITADO NO ITEM DO CHECKLIST ──
     # O POP em si é um só por checklist (ver FRENTE_POP_BASE em db.py) — o que varia
     # de item para item é o ponto interno avaliado. Os padrões abaixo extraem esse
@@ -944,158 +927,16 @@ with tabs[3]:
         
         return ranking_loja, ranking_frente
     
-    def calcular_maturidade(df):
-        """Calcula distribuição de maturidade"""
-        df['nivel'] = df['total'].apply(nivel_maturidade)
-        distrib = df['nivel'].value_counts().sort_index()
-        return distrib
-    
-    def calcular_reincidencias(df):
-        """Calcula reincidências de não conformidades"""
-        # ── VERIFICA SE O DATAFRAME ESTÁ VAZIO OU NÃO TEM A COLUNA ──
-        if df.empty or 'criticas' not in df.columns:
-            return pd.DataFrame()
-        
-        todas_tags = []
-        for criticas in df['criticas']:
-            if isinstance(criticas, list):
-                for c in criticas:
-                    tags = tags_de(normalizar_critica(c)['texto'])
-                    todas_tags.extend(tags)
-
-        if todas_tags:
-            from collections import Counter
-            freq = Counter(todas_tags)
-            return pd.DataFrame(freq.items(), columns=['Tema', 'Frequência']).sort_values('Frequência', ascending=False)
-        return pd.DataFrame()
-    
-    def gerar_insights(df):
-        """Gera insights automáticos"""
-        insights = []
-        
-        # Tópico mais frágil
-        if 'topicos' in df.columns and not df.empty:
-            topicos_medias = []
-            for i, nome in enumerate(SLOTS_CURTOS):
-                pcts = []
-                for _, row in df.iterrows():
-                    if isinstance(row['topicos'], list) and len(row['topicos']) > i:
-                        pcts.append(row['topicos'][i].get('pct', 0))
-                if pcts:
-                    topicos_medias.append({'topico': nome, 'media': sum(pcts)/len(pcts)})
-            if topicos_medias:
-                mais_fragil = min(topicos_medias, key=lambda x: x['media'])
-                acima_80 = len([t for t in topicos_medias if t['media'] >= 80])
-                insights.append(f"▼ **{mais_fragil['topico']}** é o tópico mais frágil da rede (média {mais_fragil['media']:.1f}%), abaixo de 80 em {len(df)-acima_80} de {len(df)} auditorias")
-        
-        # Frente com menor nota
-        if not df.empty:
-            notas_tipo = df.groupby('tipo')['total'].mean()
-            if len(notas_tipo) > 0:
-                pior = notas_tipo.idxmin()
-                melhor = notas_tipo.idxmax()
-                insights.append(f"◆ Entre as frentes, **{CHECKLISTS.get(pior, {}).get('nome', pior)}** tem a menor nota média ({notas_tipo[pior]:.1f}%) e **{CHECKLISTS.get(melhor, {}).get('nome', melhor)}** a maior ({notas_tipo[melhor]:.1f}%)")
-        
-        # Reincidência mais comum
-        todas_tags = []
-        for criticas in df['criticas']:
-            if isinstance(criticas, list):
-                for c in criticas:
-                    todas_tags.extend(tags_de(normalizar_critica(c)['texto']))
-
-        if todas_tags:
-            from collections import Counter
-            freq_tags = Counter(todas_tags)
-            if freq_tags:
-                top = freq_tags.most_common(1)[0]
-                lojas_com_top = set()
-                for _, row in df.iterrows():
-                    if isinstance(row['criticas'], list):
-                        for c in row['criticas']:
-                            if top[0] in tags_de(normalizar_critica(c)['texto']):
-                                lojas_com_top.add(row['loja'])
-                insights.append(f"↻ A não conformidade que **mais se repete** é '{top[0]}', presente em {len(lojas_com_top)} loja(s)")
-        
-        return insights
-
-    def classificar_causa_raiz(tema: str) -> str:
-        """Agrupa o tema da não conformidade em uma categoria de causa raiz."""
-        t = tema.lower()
-        if any(k in t for k in ['painel', 'anexo', 'gestão visual', 'visual']):
-            return 'Gestão Visual & Padronização'
-        if any(k in t for k in ['plano de ação', 'informal', 'indicador', 'kpi', 'monitorado']):
-            return 'Gestão & Indicadores'
-        if any(k in t for k in ['pop', 'procedimento', 'afixado']):
-            return 'Cumprimento de POP'
-        if any(k in t for k in ['praga', 'estrutura', 'deteriorada', 'infiltra', 'mofo', 'ralo']):
-            return 'Estrutura & Manutenção'
-        if any(k in t for k in ['temperatura', 'manual', 'frágil', 'equipamento']):
-            return 'Controle de Processo / Equipamento'
-        if any(k in t for k in ['reunião', 'alinhamento']):
-            return 'Rotina de Gestão'
-        if any(k in t for k in ['integração', 'reciclagem', 'equipe', 'treinamento']):
-            return 'Capacitação de Pessoas'
-        if any(k in t for k in ['falha', 'caixa']):
-            return 'Execução Operacional'
-        return 'Outros'
-
-    def calcular_ranking_risco_lojas(df_filtrada):
-        """Ranking de lojas por risco real, calculado pela escala oficial de Níveis 0 a 5.
-        Nível 0 = Prática ausente (peso máximo: 5 pts) até Nível 5 = Excelência (0 pts)."""
-
-        pesos = {
-            'Nível 0': 5,  # Prática completamente ausente - peso máximo
-            'Nível 1': 4,  # Iniciativa sem formalização
-            'Nível 2': 3,  # Processo incompleto/inconsistente
-            'Nível 3': 2,  # Processo com desvios frequentes
-            'Nível 4': 1,  # Executado com falhas mínimas
-            'Nível 5': 0   # Excelência - zero risco
-        }
-        risco = {}
-
-        for _, row in df_filtrada.iterrows():
-            loja = str(row['loja'])
-            if loja not in risco:
-                risco[loja] = {'score_risco': 0, 'total_criticas': 0, 'auditorias': 0, 'notas': []}
-
-            risco[loja]['auditorias'] += 1
-            risco[loja]['notas'].append(row['total'])
-
-            if isinstance(row['criticas'], list):
-                for c in row['criticas']:
-                    texto_c = normalizar_critica(c)['texto']
-                    risco[loja]['total_criticas'] += 1
-                    peso_aplicado = 2  # Peso padrão (Nível 3) caso não identifique
-                    for nivel_str, peso in pesos.items():
-                        if nivel_str in texto_c:
-                            peso_aplicado = peso
-                            break
-                    risco[loja]['score_risco'] += peso_aplicado
-
-        ranking = []
-        for loja, d in risco.items():
-            ranking.append({
-                'loja': loja,
-                'score_risco': d['score_risco'],
-                'total_criticas': d['total_criticas'],
-                'auditorias': d['auditorias'],
-                'nota_media': sum(d['notas']) / len(d['notas']),
-            })
-
-        return sorted(ranking, key=lambda x: -x['score_risco'])
-
-    # ── SUB-ABAS ──
+    # ── SUB-ABAS (ordem conforme a navegação do HTML de referência v2) ──
     sub_tabs = st.tabs([
         "▩ Painel geral",
-        "◎ Análise por loja",
-        "▲ Mapa de maturidade",
-        "✦ Reincidências & insights",
         "≡ Rankings",
         "▦ Mapa de risco",
-        "⭳ Importar PDF",
-        "＋ Lançar manual",
+        "◎ Análise por loja",
         "✕ Não conformidades",
         "☰ Histórico",
+        "⭳ Importar PDF",
+        "＋ Lançar manual",
         "⛁ Dados & exportação"
     ])
     
@@ -1290,10 +1131,337 @@ with tabs[3]:
                 file_name=f"auditorias_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv", use_container_width=True, key="export_csv_painel_geral")
 
-       # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 2 - ANÁLISE POR LOJA
+        # ═══════════════════════════════════════════════════════════════════
+    # SUB-ABA 2 - RANKINGS
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[1]:
+        st.markdown(cab_html(
+            "Rankings",
+            "Classificações pela auditoria mais recentes de cada loja/frente.",
+            "≡",
+        ), unsafe_allow_html=True)
+        
+        if df_auditorias.empty:
+            st.info(" Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
+        else:
+            # ── CÁLCULOS ──
+            ranking_loja, ranking_frente = calcular_rankings(df_auditorias)
+            
+            # Tópicos mais frágeis
+            topicos_medias = []
+            for i, nome in enumerate(SLOTS_CURTOS):
+                pcts = []
+                for _, row in df_auditorias.iterrows():
+                    if isinstance(row['topicos'], list) and len(row['topicos']) > i:
+                        pcts.append(row['topicos'][i].get('pct', 0))
+                if pcts:
+                    topicos_medias.append({'topico': nome, 'media': sum(pcts)/len(pcts), 'peso': POSSIVEL[i]})
+            
+            # ═══════════════════════════════════════════════════════════
+            # LINHA 1: Ranking geral + Tópicos frágeis
+            # ═══════════════════════════════════════════════════════════
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.markdown("**Ranking geral das lojas**")
+
+                if not ranking_loja.empty:
+                    frentes_por_loja_rk = df_auditorias.groupby('loja')['tipo'].nunique().to_dict()
+                    n_frentes_total_rk = len(CHECKLISTS)
+                    tem_cobertura_parcial = any(
+                        frentes_por_loja_rk.get(loja, 0) < n_frentes_total_rk for loja in ranking_loja.index
+                    )
+
+                    html = "<table style='width:100%;border-collapse:collapse;font-size:0.85rem;'>"
+                    html += "<thead><tr style='background:#0a3d1f;'>"
+                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:left;font-size:0.7rem;text-transform:uppercase;'>#</th>"
+                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:left;font-size:0.7rem;text-transform:uppercase;'>Loja</th>"
+                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Cobertura</th>"
+                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Nota</th>"
+                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Faixa</th>"
+                    html += "</tr></thead><tbody>"
+
+                    for i, (loja, nota) in enumerate(ranking_loja.items(), 1):
+                        f = faixa(nota)
+                        nome_loja = dict(LOJAS).get(loja, loja)
+                        cor = f['cor']
+                        rot = f['rot']
+                        n_frentes_loja = frentes_por_loja_rk.get(loja, 0)
+                        parcial = n_frentes_loja < n_frentes_total_rk
+                        cor_cob = '#D64545' if parcial else '#728177'
+                        bg_cob = '#fdeeee' if parcial else '#F4F7F3'
+
+                        html += "<tr style='border-bottom:1px solid #e8f3ec;'>"
+                        html += "<td style='padding:0.65rem 0.8rem;font-weight:700;color:#1E7A2A;'>" + str(i) + "</td>"
+                        html += "<td style='padding:0.65rem 0.8rem;font-weight:600;'><span style='font-weight:700;color:#1E7A2A;'>" + loja + "</span> " + nome_loja + "</td>"
+                        html += f"<td style='padding:0.65rem 0.8rem;text-align:center;'><span style='background:{bg_cob};color:{cor_cob};padding:2px 9px;border-radius:5px;font-size:0.7rem;font-weight:700;'>{n_frentes_loja}/{n_frentes_total_rk}</span></td>"
+                        html += "<td style='padding:0.65rem 0.8rem;text-align:center;font-weight:700;font-size:0.95rem;color:" + cor + ";'>" + f"{nota:.2f}" + "</td>"
+                        html += "<td style='padding:0.65rem 0.8rem;text-align:center;'><span style='background:" + cor + ";color:white;padding:2px 10px;border-radius:20px;font-size:0.65rem;font-weight:700;'>" + rot + "</span></td>"
+                        html += "</tr>"
+
+                    html += "</tbody></table>"
+                    st.markdown(html, unsafe_allow_html=True)
+                    if tem_cobertura_parcial:
+                        st.caption("ⓘ Unidades com cobertura parcial não são diretamente comparáveis às demais.")
+                else:
+                    st.info("Nenhuma loja auditada.")
+            
+            with col2:
+                st.markdown("**Blocos mais frágeis da rede** <span style='font-size:11px;color:#728177;font-weight:400'>onde a rede mais perde score</span>", unsafe_allow_html=True)
+
+                topicos_ordenados = sorted(topicos_medias, key=lambda x: x['media'])
+
+                html = ""
+                for item in topicos_ordenados:
+                    f = faixa(item['media'])
+                    cor = f['cor']
+                    media_str = f"{item['media']:.2f}"
+                    media_pct = f"{item['media']:.2f}"
+
+                    html += "<div style='display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #EEF3EE;'>"
+                    html += "<div style='width:150px;font-size:0.85rem;font-weight:600;color:#0d2a16;'>" + item['topico'] + f" <span style='color:#728177;font-weight:400'>(peso {item['peso']}%)</span></div>"
+                    html += "<div style='flex:1;height:24px;background:#F4F7F3;border-radius:6px;overflow:hidden;'>"
+                    html += "<div style='height:100%;width:" + media_pct + "%;background:" + cor + ";border-radius:6px;'></div>"
+                    html += "</div>"
+                    html += "<div style='width:50px;text-align:right;font-weight:700;font-size:0.9rem;color:" + cor + ";'>" + media_str + "</div>"
+                    html += "</div>"
+
+                st.markdown(html, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style="background:#fff8e6;border:1px solid #f0dca0;border-left:4px solid #F2C300;
+                    border-radius:8px;padding:11px 14px;font-size:13px;margin-top:16px;display:flex;gap:10px;">
+                    <span>ⓘ</span><div>O primeiro bloco tem peso {POSSIVEL[0]}% — cada ponto perdido nele custa mais que nos demais.</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # ═══════════════════════════════════════════════════════════
+            # LINHA 2: Rankings por frente (3 colunas)
+            # ═══════════════════════════════════════════════════════════
+            col_acougue, col_frente, col_receb = st.columns(3)
+            
+            for col, tipo_key, titulo, cor_badge in [
+                (col_acougue, 'AÇO-AUD-01', 'Açougue', '#B0442E'),
+                (col_frente, 'FRE-AUD-02', 'Frente de Loja', '#2E6BB0'),
+                (col_receb, 'REC-AUD-03', 'Recebimento', '#7A4EB0')
+            ]:
+                with col:
+                    html = "<div style='background:" + cor_badge + "15;border:1px solid " + cor_badge + ";border-radius:8px;padding:12px 16px;margin-bottom:16px;'>"
+                    html += "<span style='background:" + cor_badge + ";color:white;padding:3px 12px;border-radius:15px;font-size:0.7rem;font-weight:700;text-transform:uppercase;'>" + titulo + "</span>"
+                    html += "</div>"
+                    
+                    df_tipo = df_auditorias[df_auditorias['tipo'] == tipo_key]
+
+                    if not df_tipo.empty:
+                        ultimas_tipo = df_tipo.sort_values('data').groupby('loja').last().reset_index()
+                        rank_tipo = ultimas_tipo.groupby('loja')['total'].mean().sort_values(ascending=False)
+
+                        for i, (loja, nota) in enumerate(rank_tipo.items(), 1):
+                            f = faixa(nota)
+                            cor = f['cor']
+                            nota_str = f"{nota:.2f}"
+                            nome_loja = dict(LOJAS).get(loja, loja)
+
+                            html += "<div style='display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #EEF3EE;'>"
+                            html += "<span style='font-weight:600;color:#728177;width:20px;'>" + str(i) + ".</span>"
+                            html += "<span style='font-weight:700;font-size:0.85rem;color:#0d2a16;flex:1;'>" + loja + " " + nome_loja + "</span>"
+                            html += "<span style='font-weight:700;font-size:0.9rem;color:" + cor + ";'>" + nota_str + "</span>"
+                            html += "</div>"
+                    else:
+                        html += "<div style='text-align:center;padding:20px;color:#728177;font-size:0.85rem;'>Nenhuma auditoria desta frente.</div>"
+
+                    st.markdown(html, unsafe_allow_html=True)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # SUB-ABA 3 - MAPA DE RISCO (HEATMAP)
+    # ═══════════════════════════════════════════════════════════════════
+    with sub_tabs[2]:
+        st.markdown(cab_html(
+            "Mapa de risco",
+            "Resumo dos Tópicos da auditoria mais recentes.",
+            "▦",
+        ), unsafe_allow_html=True)
+        
+        # ─ VERIFICA SE HÁ DADOS ──
+        if df_auditorias.empty:
+            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
+        else:
+            
+            tipo_heatmap = st.selectbox(
+                "Selecione a Frente",
+                list(CHECKLISTS.keys()),
+                format_func=lambda x: f"{CHECKLISTS[x]['nome']} — {x}",
+                key="heatmap_tipo"
+            )
+            
+            df_heat = df_auditorias[df_auditorias['tipo'] == tipo_heatmap]
+            
+            if df_heat.empty:
+                st.info(f"Nenhuma auditoria de {CHECKLISTS[tipo_heatmap]['nome']} foi registrada. "
+                        "Use a aba 'Importar PDF' ou 'Lançar Manual' para registrar a primeira.")
+            else:
+                # Última auditoria por loja
+                df_heat = df_heat.sort_values('data').groupby('loja').last().reset_index()
+                
+                # ── FUNÇÃO PARA COR DO TEXTO ──
+                def cor_nota(nota):
+                    if nota >= 90: return '#1E7A2A'
+                    elif nota >= 80: return '#5FB65B'
+                    elif nota >= 70: return '#E8B23A'
+                    elif nota >= 60: return '#E67E22'
+                    else: return '#D64545'
+                
+                # Constrói a tabela HTML
+                html_table = """
+                <style>
+                .heatmap-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-size: 0.8rem;
+                }
+                .heatmap-table thead tr {
+                    background: #0a3d1f;
+                    position: sticky;
+                    top: 0;
+                    z-index: 2;
+                }
+                .heatmap-table thead th {
+                    color: #9ecfb2;
+                    font-weight: 700;
+                    font-size: 0.66rem;
+                    letter-spacing: 0.09em;
+                    text-transform: uppercase;
+                    padding: 0.8rem 0.8rem;
+                    text-align: center;
+                    border-bottom: 3px solid #f8c10a;
+                    white-space: nowrap;
+                }
+                .heatmap-table thead th:first-child {
+                    text-align: left;
+                    min-width: 180px;
+                }
+                .heatmap-table tbody tr {
+                    border-bottom: 1px solid #e8f3ec;
+                    transition: background 0.12s;
+                }
+                .heatmap-table tbody tr:hover {
+                    background: #eaf7ef;
+                }
+                .heatmap-table tbody tr:nth-child(even) {
+                    background: #f4fbf6;
+                }
+                .heatmap-table tbody tr:nth-child(even):hover {
+                    background: #e2f4e8;
+                }
+                .heatmap-table tbody td {
+                    padding: 0.65rem 0.8rem;
+                    color: #0d2a16;
+                    vertical-align: middle;
+                    white-space: nowrap;
+                    font-size: 0.8rem;
+                    text-align: center;
+                    font-weight: 600;
+                }
+                .heatmap-table tbody td:first-child {
+                    text-align: left;
+                    font-weight: 700;
+                    color: #0a3d1f;
+                }
+                .nota-num {
+                    font-family: 'Barlow Semi Condensed', sans-serif;
+                    font-weight: 700;
+                    font-size: 0.95rem;
+                }
+                </style>
+                <div style="overflow-x:auto;max-height:56vh;overflow-y:auto;border:1px solid #DDE6DC;border-radius:12px;">
+                <table class="heatmap-table">
+                    <thead>
+                        <tr>
+                            <th>Loja</th>
+                """ + "".join(
+                    f"<th>{nome}<br><span style='font-weight:400;color:#9aa89c'>{POSSIVEL[i]}%</span></th>"
+                    for i, nome in enumerate(SLOTS_CURTOS)
+                ) + """
+                            <th>Nota</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                """
+                
+                for _, row in df_heat.iterrows():
+                    loja_str = f"{row['loja']} - {dict(LOJAS).get(row['loja'], '')}"
+                    
+                    # Tópicos - cores apenas no texto dos números
+                    topicos_html = ""
+                    if isinstance(row['topicos'], list):
+                        for i in range(5):
+                            pct = row['topicos'][i].get('pct', 0) if i < len(row['topicos']) else 0
+                            cor = cor_nota(pct)
+                            topicos_html += f'<td style="color:{cor};font-weight:700;">{pct:.2f}</td>'
+                    else:
+                        for _ in range(5):
+                            topicos_html += '<td>—</td>'
+                    
+                    # Nota Total - cor no texto
+                    nota = row['total']
+                    cor = cor_nota(nota)
+                    nota_html = f'<td><span class="nota-num" style="color:{cor}">{nota:.2f}</span></td>'
+                    
+                    html_table += f"""
+                        <tr>
+                            <td>{loja_str}</td>
+                            {topicos_html}
+                            {nota_html}
+                        </tr>
+                    """
+                
+                html_table += """
+                    </tbody>
+                </table>
+                </div>
+                """
+                
+                # ── RENDERIZA O HTML COM components ──
+                st.components.v1.html(html_table, height=500, scrolling=True)
+                
+                st.caption(f"{len(df_heat)} loja(s) auditada(s) · Exibindo a última auditoria de cada loja")
+                
+                # ── LEGENDA (gerada a partir de faixa(), sem duplicar valores) ──
+                faixas_ref = [(95, '≥ 90'), (85, '80-89'), (75, '70-79'), (65, '60-69'), (30, '< 60')]
+                legenda_html = '<div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.85rem;color:#728177;margin-top:16px;padding-top:12px;border-top:1px solid #EEF3EE;">'
+                for amostra, faixa_txt in faixas_ref:
+                    fx = faixa(amostra)
+                    legenda_html += (
+                        '<span style="display:flex;align-items:center;gap:6px;">'
+                        f'<span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:{fx["cor"]};"></span>'
+                        f'{fx["rot"]} ({faixa_txt})</span>'
+                    )
+                legenda_html += '</div>'
+                st.markdown(legenda_html, unsafe_allow_html=True)
+                
+                # ── EXPORTAR E ATUALIZAR ──
+                st.markdown("---")
+                col1, col2 = st.columns(2)
+                with col1:
+                    csv_heat = df_heat.to_csv(index=False, sep=';')
+                    st.download_button(
+                        " Exportar Mapa de Risco CSV",
+                        data=csv_heat,
+                        file_name=f"mapa_risco_{tipo_heatmap}_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                with col2:
+                    if st.button("🔄 Atualizar Mapa", use_container_width=True):
+                        st.cache_data.clear()
+                        st.rerun()
+                    
+                    
+       # ═══════════════════════════════════════════════════════════════════
+    # SUB-ABA 4 - ANÁLISE POR LOJA
+    # ═══════════════════════════════════════════════════════════════════
+    with sub_tabs[3]:
         st.markdown(cab_html(
             "Análise por loja",
             "Card central compilado a partir do Resumo dos Tópicos de cada frente. Compara a loja com a média da rede e destaca fortalezas e fragilidades.",
@@ -1617,620 +1785,214 @@ with tabs[3]:
                             """, unsafe_allow_html=True)
                 else:
                     st.info("Apenas um ciclo registrado. A série aparece quando você lançar a próxima auditoria desta loja.")
-
-        # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 3 - MAPA DE MATURIDADE
     # ═══════════════════════════════════════════════════════════════════
-    with sub_tabs[2]:
+    # SUB-ABA 5 - NÃO CONFORMIDADES
+    # ═══════════════════════════════════════════════════════════════════
+    with sub_tabs[4]:
         st.markdown(cab_html(
-            "Mapa de maturidade",
-            "Diagnóstico do nível de maturidade da rede a partir das auditorias aplicadas.",
-            "▲",
+            "Não conformidades",
+            "Ciclo de vida completo das NCs registradas: status, responsável, prazo e ação corretiva.",
+            "✕",
+        ), unsafe_allow_html=True)
+
+        if df_auditorias.empty:
+            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
+        else:
+            ncs_all = todas_ncs(df_auditorias)
+
+            if not ncs_all:
+                st.info("Nenhuma não conformidade registrada ainda.")
+            else:
+                ncs_abertas_all = [n for n in ncs_all if n.get('status') != 'Concluída']
+                ncs_vencidas_all = [n for n in ncs_abertas_all if vencida(n)]
+                ncs_alta_all = [n for n in ncs_abertas_all if n.get('criticidade') == 'Alta']
+                ncs_sem_pop_all = [n for n in ncs_abertas_all if not (n.get('pop_nome') or '').strip()]
+
+                # ── KPIs ──
+                k1, k2, k3, k4 = st.columns(4)
+                for col, rot, num, cor_kpi in [
+                    (k1, 'Em aberto', len(ncs_abertas_all), '#D64545' if ncs_abertas_all else '#1E7A2A'),
+                    (k2, 'Prazo vencido', len(ncs_vencidas_all), '#D64545' if ncs_vencidas_all else '#1E7A2A'),
+                    (k3, 'Criticidade alta', len(ncs_alta_all), '#D64545' if ncs_alta_all else '#1E7A2A'),
+                    (k4, 'Sem rastreio ao POP', len(ncs_sem_pop_all), '#D64545' if ncs_sem_pop_all else '#1E7A2A'),
+                ]:
+                    with col:
+                        st.markdown(f"""
+                        <div class="aud-card aud-kpi">
+                            <div class="rot">{rot}</div>
+                            <div class="num">{num}</div>
+                            <div class="faixa"><i style="width:100%;background:{cor_kpi}"></i></div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── FILTROS ──
+                fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
+                with fc1:
+                    f_loja = st.selectbox("Loja", ["Todas"] + sorted({n['_loja'] for n in ncs_all if n.get('_loja')}), key="nc_f_loja")
+                with fc2:
+                    f_tipo = st.selectbox("Frente", ["Todas"] + list(CHECKLISTS.keys()),
+                                           format_func=lambda x: CHECKLISTS[x]['nome'] if x in CHECKLISTS else x, key="nc_f_tipo")
+                with fc3:
+                    f_crit = st.selectbox("Criticidade", ["Todas", "Alta", "Média", "Baixa"], key="nc_f_crit")
+                with fc4:
+                    f_status = st.selectbox("Status", ["Todas", "Aberta", "Em andamento", "Concluída"], key="nc_f_status")
+                with fc5:
+                    f_pop = st.selectbox("Rastreio ao POP", ["Todas", "Com POP", "Sem POP"], key="nc_f_pop")
+                with fc6:
+                    f_venc = st.selectbox("Prazo", ["Todas", "Vencidas"], key="nc_f_venc")
+
+                ncs_filtradas = ncs_all
+                if f_loja != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if n.get('_loja') == f_loja]
+                if f_tipo != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if n.get('_tipo') == f_tipo]
+                if f_crit != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if n.get('criticidade') == f_crit]
+                if f_status != "Todas":
+                    ncs_filtradas = [n for n in ncs_filtradas if (n.get('status') or 'Aberta') == f_status]
+                if f_pop == "Com POP":
+                    ncs_filtradas = [n for n in ncs_filtradas if (n.get('pop_nome') or '').strip()]
+                elif f_pop == "Sem POP":
+                    ncs_filtradas = [n for n in ncs_filtradas if not (n.get('pop_nome') or '').strip()]
+                if f_venc == "Vencidas":
+                    ncs_filtradas = [n for n in ncs_filtradas if vencida(n)]
+
+                st.caption(f"{len(ncs_filtradas)} não conformidade(s) no recorte atual.")
+
+                # ── EXPORTAR CSV DAS NCs FILTRADAS ──
+                if ncs_filtradas:
+                    df_export_nc = pd.DataFrame([{
+                        'Loja': n.get('_loja'), 'Frente': CHECKLISTS.get(n.get('_tipo'), {}).get('nome', n.get('_tipo')),
+                        'Data auditoria': n.get('_data'), 'Item': n.get('codigo_item'), 'Descrição': n.get('texto'),
+                        'POP': n.get('pop_nome'), 'Ponto do POP': n.get('ponto_pop'), 'Criticidade': n.get('criticidade'),
+                        'Status': n.get('status'), 'Responsável': n.get('responsavel'), 'Prazo': n.get('prazo'),
+                        'Ação corretiva': n.get('acao_corretiva'),
+                    } for n in ncs_filtradas])
+                    st.download_button(
+                        "📊 Exportar NCs filtradas (CSV)", data=df_export_nc.to_csv(index=False, sep=';'),
+                        file_name=f"nao_conformidades_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv", key="export_csv_ncs",
+                    )
+
+                st.markdown("---")
+
+                # ── CARTÕES EDITÁVEIS ──
+                for i, nc in enumerate(ncs_filtradas):
+                    frente_nome = CHECKLISTS.get(nc.get('_tipo'), {}).get('nome', nc.get('_tipo'))
+                    atrasada = vencida(nc)
+                    cor_crit = {'Alta': '#D64545', 'Média': '#E8B23A', 'Baixa': '#728177'}.get(nc.get('criticidade'), '#728177')
+                    titulo = f"[{nc.get('_loja')}] {frente_nome} · {nc.get('codigo_item') or '—'} — {(nc.get('texto') or '')[:70]}"
+                    if atrasada:
+                        titulo = "⚠ " + titulo
+
+                    with st.expander(titulo, expanded=False):
+                        st.markdown(f"**Frente:** {frente_nome} · **Loja:** {nc.get('_loja')} · **Data da auditoria:** {nc.get('_data')}")
+                        st.markdown(nc.get('texto') or '')
+                        pop_txt = nc.get('pop_nome') or '— sem vínculo —'
+                        if nc.get('pop_codigo_2'):
+                            pop_txt = f"{nc['pop_codigo_2']} — {pop_txt}"
+                        if nc.get('ponto_pop'):
+                            pop_txt += f" ({nc['ponto_pop']})"
+                        st.caption(f"POP: {pop_txt}")
+
+                        key_base = f"ncedit_{nc['_auditoria_id']}_{nc['_idx']}"
+                        ce1, ce2, ce3 = st.columns(3)
+                        with ce1:
+                            novo_status = st.selectbox(
+                                "Status", ['Aberta', 'Em andamento', 'Concluída'],
+                                index=['Aberta', 'Em andamento', 'Concluída'].index(nc.get('status') or 'Aberta'),
+                                key=f"{key_base}_status",
+                            )
+                        with ce2:
+                            novo_resp = st.text_input("Responsável", value=nc.get('responsavel', ''), key=f"{key_base}_resp")
+                        with ce3:
+                            prazo_atual = None
+                            if nc.get('prazo'):
+                                try:
+                                    prazo_atual = datetime.strptime(nc['prazo'], '%Y-%m-%d')
+                                except Exception:
+                                    prazo_atual = None
+                            novo_prazo = st.date_input("Prazo", value=prazo_atual, key=f"{key_base}_prazo")
+                        nova_acao = st.text_area("Ação corretiva", value=nc.get('acao_corretiva', ''), key=f"{key_base}_acao", height=70)
+
+                        if st.button("💾 Salvar alterações", key=f"{key_base}_save"):
+                            aud_id = int(nc['_auditoria_id'])
+                            row_aud = df_auditorias[df_auditorias['id'] == aud_id]
+                            if row_aud.empty:
+                                st.error("Auditoria de origem não encontrada.")
+                            else:
+                                criticas_originais = row_aud.iloc[0]['criticas']
+                                criticas_norm = [normalizar_critica(c) for c in criticas_originais]
+                                idx_nc = nc['_idx']
+                                if idx_nc < len(criticas_norm):
+                                    criticas_norm[idx_nc]['status'] = novo_status
+                                    criticas_norm[idx_nc]['responsavel'] = novo_resp.strip()
+                                    criticas_norm[idx_nc]['prazo'] = novo_prazo.strftime('%Y-%m-%d') if novo_prazo else ''
+                                    criticas_norm[idx_nc]['acao_corretiva'] = nova_acao.strip()
+                                    try:
+                                        atualizar_auditoria(aud_id, criticas_norm)
+                                        st.success("Não conformidade atualizada.")
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Erro ao salvar: {e}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SUB-ABA 6 - HISTÓRICO
+    # ═══════════════════════════════════════════════════════════════════
+    with sub_tabs[5]:
+        st.markdown(cab_html(
+            "Histórico de auditorias",
+            "Todas as auditorias registradas.",
+            "☰",
         ), unsafe_allow_html=True)
         
         # ── VERIFICA SE HÁ DADOS ──
         if df_auditorias.empty:
             st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
         else:
-            nota_media = df_auditorias['total'].mean()
-            nivel_atual = nivel_maturidade(nota_media)
+            from datetime import datetime
             
             col1, col2 = st.columns(2)
-            
             with col1:
-                st.markdown("**Escada de maturidade da rede**")
-                
-                for i in range(5, 0, -1):
-                    n = NIVEIS[i]
-                    is_atual = i == nivel_atual
-                    st.markdown(f"""
-                    <div style="padding:12px 16px;margin-bottom:6px;border-left:5px solid {n['hex']};
-                        background:{'#e6f4ec' if is_atual else '#ffffff'};border-radius:10px;
-                        border:1px solid {'#1E7A2A' if is_atual else '#DDE6DC'};
-                        display:flex;justify-content:space-between;align-items:center;position:relative;">
-                        <div>
-                            <span style="font-weight:700;font-size:30px;width:40px;text-align:center;line-height:1;color:{n['hex']};">{i}</span>
-                            <span style="font-weight:700;font-size:14px;margin-left:10px;">{n['rot']}</span>
-                            <span style="font-size:11px;color:#728177;margin-left:6px;">({n['fx']})</span>
-                            <p style="font-size:12px;color:#2A3A2E;margin-top:2px;">{n['desc']}</p>
-                        </div>
-                        {f'<span style="background:#1E7A2A;color:white;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;position:absolute;right:14px;top:14px;">📍 ATUAL</span>' if is_atual else ''}
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Gap para próximo nível
-                if nivel_atual < 5:
-                    prox = 80 if nivel_atual == 4 else 70 if nivel_atual == 3 else 60
-                    gap = prox - nota_media
-                    st.info(f"📌 Faltam **{gap:.1f} pontos** na média da rede para alcançar o **Nível {nivel_atual+1} — {NIVEIS[nivel_atual+1]['rot']}** (limiar {prox}).")
-                else:
-                    st.success("⭐ Rede no nível máximo. Foco em sustentar e reduzir variabilidade entre lojas.")
-            
-            with col2:
-                st.markdown("**Distribuição das lojas por nível**")
-                
-                df_niveis = df_auditorias.copy()
-                df_niveis['nivel'] = df_niveis['total'].apply(nivel_maturidade)
-                
-                for i in range(5, 0, -1):
-                    n = NIVEIS[i]
-                    count = len(df_niveis[df_niveis['nivel'] == i])
-                    total = len(df_niveis)
-                    pct = 100 * count / total if total > 0 else 0
-                    
-                    st.markdown(f"""
-                    <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
-                        <div style="width:170px;font-size:12.5px;font-weight:500;flex-shrink:0;">
-                            <span style="font-weight:700;color:{n['hex']};">N{i}</span> {n['rot']}
-                        </div>
-                        <div style="flex:1;height:22px;background:#F4F7F3;border-radius:5px;overflow:hidden;">
-                            <div style="display:block;height:100%;width:{pct}%;background:{n['hex']};border-radius:5px;"></div>
-                        </div>
-                        <div style="width:30px;text-align:right;font-weight:700;font-size:14px;">
-                            {count}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.caption(f"{len(df_niveis)} loja(s) auditada(s). Meta: mover as lojas de Atenção/Risco para no mínimo **Nível 4 (Gerenciado)**.")
-            
-            st.markdown("---")
-            
-            # ── NÍVEL POR PROCESSO ──
-            st.markdown("### 📊 Nível por processo")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Nível por processo**")
-                for tipo in df_auditorias['tipo'].unique():
-                    nota = df_auditorias[df_auditorias['tipo'] == tipo]['total'].mean()
-                    nv = nivel_maturidade(nota)
-                    f = faixa(nota)
-                    st.markdown(f"""
-                    <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
-                        <div style="width:120px;font-size:12.5px;font-weight:500;flex-shrink:0;">{CHECKLISTS[tipo]['nome']}</div>
-                        <div style="flex:1;height:22px;background:#F4F7F3;border-radius:5px;overflow:hidden;">
-                            <div style="display:block;height:100%;width:{min(100,nota)}%;background:{f['cor']};border-radius:5px;"></div>
-                        </div>
-                        <div style="width:80px;text-align:right;font-weight:700;font-size:14px;color:{f['cor']};">
-                            N{nv} · {nota:.1f}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown("**Nível por tópico**")
-                for i, nome in enumerate(SLOTS_CURTOS):
-                    pcts = []
-                    for _, row in df_auditorias.iterrows():
-                        if isinstance(row['topicos'], list) and len(row['topicos']) > i:
-                            pcts.append(row['topicos'][i].get('pct', 0))
-                    if pcts:
-                        media = sum(pcts)/len(pcts)
-                        nv = nivel_maturidade(media)
-                        f = faixa(media)
-                        st.markdown(f"""
-                        <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
-                            <div style="width:120px;font-size:12.5px;font-weight:500;flex-shrink:0;">{nome}</div>
-                            <div style="flex:1;height:22px;background:#F4F7F3;border-radius:5px;overflow:hidden;">
-                                <div style="display:block;height:100%;width:{min(100,media)}%;background:{f['cor']};border-radius:5px;"></div>
-                            </div>
-                            <div style="width:80px;text-align:right;font-weight:700;font-size:14px;color:{f['cor']};">
-                                N{nv} · {media:.1f}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 4 - REINCIDÊNCIAS & INSIGHTS (VERSÃO LIMPA)
-    # ═══════════════════════════════════════════════════════════════════
-    with sub_tabs[3]:
-        st.markdown(cab_html(
-            "Reincidências & Insights",
-            "Análise de causa raiz e ações prioritárias com base nos dados reais das auditorias.",
-            "✦",
-        ), unsafe_allow_html=True)
-
-        if df_auditorias.empty:
-            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
-        else:
-            # ── FILTROS ──
-            col_f1, col_f2 = st.columns(2)
-
-            with col_f1:
-                filtro_loja = st.selectbox(
+                loja_filtro_hist = st.selectbox(
                     "Filtrar por Loja",
                     ["Todas"] + sorted(df_auditorias['loja'].unique().tolist()),
-                    key="reinc_loja"
+                    key="hist_loja_final"
                 )
-
-            with col_f2:
-                filtro_frente = st.selectbox(
+            with col2:
+                tipo_filtro_hist = st.selectbox(
                     "Filtrar por Frente",
                     ["Todas"] + df_auditorias['tipo'].unique().tolist(),
-                    format_func=lambda x: CHECKLISTS.get(x, {}).get('nome', x) if x != "Todas" else "Todas",
-                    key="reinc_frente"
+                    key="hist_tipo_final"
                 )
-
-            df_filtrada = df_auditorias.copy()
-            if filtro_loja != "Todas":
-                df_filtrada = df_filtrada[df_filtrada['loja'] == filtro_loja]
-            if filtro_frente != "Todas":
-                df_filtrada = df_filtrada[df_filtrada['tipo'] == filtro_frente]
-
-            if df_filtrada.empty:
-                st.info("Nenhuma auditoria encontrada com os filtros selecionados.")
-            else:
-                # ── CÁLCULOS ──
-                df_reinc = calcular_reincidencias(df_filtrada)
-                ranking_lojas = calcular_ranking_risco_lojas(df_filtrada)
-
-                lojas_risco_sanitario = set()
-                for _, row in df_filtrada.iterrows():
-                    if isinstance(row['criticas'], list):
-                        for c in row['criticas']:
-                            texto_c = normalizar_critica(c)['texto'].lower()
-                            if any(x in texto_c for x in ['praga', 'mofo', 'infiltra', 'estrutura', 'ralo']):
-                                lojas_risco_sanitario.add(row['loja'])
-
-                # ── DIAGNÓSTICO EXECUTIVO ──
-                insights = []
-
-                if lojas_risco_sanitario:
-                    insights.append({
-                        'icone': '⚠️',
-                        'classe': 'insight-critical',
-                        'texto': (f"Risco sanitário ativo: {', '.join(sorted(lojas_risco_sanitario))} "
-                                    f"com registro de praga/infiltração — tratativa prioritária.")
-                    })
-
-                if ranking_lojas:
-                    pior_loja = ranking_lojas[0]
-                    nome_pior = dict(LOJAS).get(pior_loja['loja'], pior_loja['loja'])
-                    insights.append({
-                        'icone': '◆',
-                        'classe': 'insight-warning',
-                        'texto': (f"<b>{pior_loja['loja']} - {nome_pior}</b> lidera o ranking de risco "
-                                    f"({pior_loja['score_risco']} pts em {pior_loja['total_criticas']} não conformidades) "
-                                    f"— candidata a auditoria de acompanhamento prioritária.")
-                    })
-
-                if not df_reinc.empty:
-                    top_tema = df_reinc.iloc[0]
-                    insights.append({
-                        'icone': '▼',
-                        'classe': 'insight-highlight',
-                        'texto': (f"O tema mais recorrente é '<b>{top_tema['Tema']}</b>' "
-                                    f"com {int(top_tema['Frequência'])} ocorrências — indica falha sistêmica de padrão.")
-                    })
-
-                # ── AÇÕES RECOMENDADAS (COM BUSCA POR PALAVRAS-CHAVE) ──
-                acoes_recomendadas = []
-
-                for _, row in df_reinc.iterrows():
-                    tema = row['Tema']
-                    freq = row['Frequência']
-                    causa = classificar_causa_raiz(tema)
-
-                    exemplos_reais = []
-                    lojas_afetadas = set()
-                    niveis_encontrados = []
-
-                    # ── EXTRAI PALAVRAS-CHAVE DO TEMA ──
-                    stopwords = {'de', 'da', 'do', 'das', 'dos', 'e', 'ou', 'para', 'com', 'sem', 
-                                'em', 'na', 'no', 'nas', 'nos', 'à', 'ao', 'aos', 'que', 'se', 'por',
-                                'um', 'uma', 'uns', 'umas', 'o', 'a', 'os', 'as', 'é', 'não', 'mais'}
+            
+            df_hist = df_auditorias.copy()
+            if loja_filtro_hist != "Todas":
+                df_hist = df_hist[df_hist['loja'] == loja_filtro_hist]
+            if tipo_filtro_hist != "Todas":
+                df_hist = df_hist[df_hist['tipo'] == tipo_filtro_hist]
+            
+            # ── CRIA TABELA ESTILIZADA ──
+            if not df_hist.empty:
+                # Mapeamento de cores por tipo
+                cores_tipo = {
+                    'AÇO-AUD-01': ('Açougue', 'badge-acougue'),
+                    'FRE-AUD-02': ('Frente de Loja', 'badge-frente'),
+                    'REC-AUD-03': ('Recebimento', 'badge-recebimento')
+                }
                 
-                    palavras_chave = []
-                    for p in tema.lower().split():
-                        p_limpa = p.strip('.,;:!?()[]{}"\'')
-                        if len(p_limpa) > 3 and p_limpa not in stopwords:
-                            palavras_chave.append(p_limpa)
+                # Função para badge de nota
+                def badge_nota(nota):
+                    if nota >= 90: return f'<span class="badge-status badge-excelente">Excelente</span>'
+                    elif nota >= 80: return f'<span class="badge-status badge-bom">Bom</span>'
+                    elif nota >= 70: return f'<span class="badge-status badge-atencao">Atenção</span>'
+                    elif nota >= 60: return f'<span class="badge-status badge-risco">Risco</span>'
+                    else: return f'<span class="badge-status badge-critico">Crítico</span>'
                 
-                    if not palavras_chave:
-                        palavras_chave = tema.lower().split()[:3]
-
-                    for _, r in df_filtrada.iterrows():
-                        if isinstance(r['criticas'], list):
-                            for c in r['criticas']:
-                                texto_c = normalizar_critica(c)['texto']
-                                c_lower = texto_c.lower()
-                                # Busca por qualquer palavra-chave (match_count >= 1)
-                                match_count = sum(1 for palavra in palavras_chave if palavra in c_lower)
-
-                                if match_count >= 1:
-                                    exemplos_reais.append({'loja': r['loja'], 'texto': texto_c})
-                                    lojas_afetadas.add(str(r['loja']))
-
-                                    for n in range(0, 6):
-                                        if f'nível {n}' in c_lower or f'nivel {n}' in c_lower:
-                                            niveis_encontrados.append(n)
-                                            break
-
-                    # Se não encontrou lojas, tenta uma busca mais ampla
-                    if not lojas_afetadas:
-                        for _, r in df_filtrada.iterrows():
-                            if isinstance(r['criticas'], list):
-                                for c in r['criticas']:
-                                    c_lower = normalizar_critica(c)['texto'].lower()
-                                    for palavra in palavras_chave[:3]:
-                                        if palavra in c_lower:
-                                            lojas_afetadas.add(str(r['loja']))
-                                            break
-                                    if lojas_afetadas:
-                                        break
-                            if lojas_afetadas:
-                                break
-
-                    # Nível médio
-                    nivel_medio = sum(niveis_encontrados) / len(niveis_encontrados) if niveis_encontrados else 3.0
-                    num_lojas = len(lojas_afetadas)
-
-                    # Urgência
-                    if nivel_medio <= 1.0:
-                        urgencia = "alta"
-                    elif num_lojas > 2:
-                        urgencia = "média"
-                    else:
-                        urgencia = "baixa"
-
-                    if num_lojas > 3:
-                        padrao_txt = "sistêmico"
-                    elif num_lojas > 1:
-                        padrao_txt = "recorrente"
-                    else:
-                        padrao_txt = "isolado"
-
-                    if nivel_medio == 0:
-                        diagnostico = (f"[{causa}] ⛔ PRÁTICA AUSENTE em {num_lojas} loja(s) — "
-                                        f"processo não está sendo executado. Gravidade máxima.")
-                    else:
-                        diagnostico = (f"[{causa}] Problema {padrao_txt} em {num_lojas} loja(s), "
-                                        f"gravidade média nível {nivel_medio:.1f}.")
-
-                    # Ações
-                    if nivel_medio == 0:
-                        acao = (diagnostico + " AÇÃO URGENTE: Implementar imediatamente a prática ausente, "
-                                "mesmo que de forma simplificada, para eliminar o risco. Em seguida, "
-                                "desenhar o processo completo, treinar a equipe e integrar à rotina de gestão.")
-                    elif causa == 'Cumprimento de POP':
-                        acao = (diagnostico + " AÇÃO: O procedimento já existe — o problema é adesão. "
-                                "Fazer blitz de verificação sem aviso prévio e vincular resultado à avaliação do líder.")
-                    elif causa == 'Gestão Visual & Padronização':
-                        acao = (diagnostico + " AÇÃO: Padronizar checklist de afixação nos pontos críticos e "
-                                "incluir verificação de gestão visual na rotina diária do líder.")
-                    elif causa == 'Gestão & Indicadores':
-                        acao = (diagnostico + " AÇÃO: Cobrar plano de ação formal (5W2H) em comitê mensal de "
-                                "controladoria; sem plano registrado, o item permanece em aberto.")
-                    elif causa == 'Estrutura & Manutenção':
-                        if nivel_medio <= 1.0:
-                            acao = (diagnostico + " AÇÃO CRÍTICA: Acionar manutenção emergencial e controle de "
-                                    "pragas imediatamente, com validação fotográfica em até 48h.")
-                        else:
-                            acao = (diagnostico + " AÇÃO: Incluir a loja em cronograma preventivo de manutenção "
-                                    "e controle de pragas com verificação mensal.")
-                    elif causa == 'Controle de Processo / Equipamento':
-                        if num_lojas > 2:
-                            acao = (diagnostico + " AÇÃO: Avaliar substituição por monitoramento digital de "
-                                    "temperatura (elimina dependência de registro manual).")
-                        else:
-                            acao = (diagnostico + " AÇÃO: Reforçar o procedimento já existente com registro "
-                                    "obrigatório assinado e calibração de equipamento.")
-                    elif causa == 'Rotina de Gestão':
-                        acao = (diagnostico + " AÇÃO: Cobrar cumprimento do ritual semanal já definido, com pauta "
-                                "e ata obrigatórias anexadas ao painel de gestão.")
-                    elif causa == 'Capacitação de Pessoas':
-                        acao = (diagnostico + " AÇÃO: Verificar se o programa de integração já existente está "
-                                "sendo de fato aplicado a 100% dos admitidos; auditar registros de reciclagem.")
-                    else:
-                        acao = (diagnostico + " AÇÃO: Análise de causa raiz dedicada com o gerente da loja, "
-                                "com plano corretivo formal e prazo definido.")
-
-                    exemplos_formatados = [{'loja': ex['loja'], 'texto': ex['texto'][:120]} for ex in exemplos_reais[:3]]
-
-                    acoes_recomendadas.append({
-                        'tema': tema,
-                        'causa': causa,
-                        'ocorr': freq,
-                        'acao': acao,
-                        'exemplos': exemplos_formatados,
-                        'urgencia': urgencia,
-                        'lojas_afetadas': sorted(lojas_afetadas) if lojas_afetadas else ['Não identificado']
-                    })
-
-                urgencia_order = {'alta': 0, 'média': 1, 'baixa': 2}
-                acoes_recomendadas.sort(key=lambda x: (urgencia_order.get(x['urgencia'], 3), -x['ocorr']))
-
-                # ── EXIBIÇÃO ──
-                style = """
-                <style>
-                .insight-item { padding: 12px 0; border-bottom: 1px solid #EEF3EE; }
-                .insight-icon { font-size: 16px; margin-right: 8px; }
-                .insight-text { font-size: 13px; color: #0d2a16; line-height: 1.5; }
-                .insight-highlight { font-weight: 700; color: #1E7A2A; }
-                .insight-warning { font-weight: 700; color: #E67E22; }
-                .insight-critical { font-weight: 700; color: #D64545; }
-                .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 8px; }
-                .data-table th { text-align: left; padding: 0.7rem; background: #0a3d1f; color: #9ecfb2; font-weight: 700; font-size: 0.68rem; text-transform: uppercase; border-bottom: 3px solid #f8c10a; }
-                .data-table td { padding: 0.7rem; border-bottom: 1px solid #EEF3EE; vertical-align: top; }
-                .data-table tr:hover { background: #f8faf8; }
-                .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; }
-                .tag-alta { background: #D64545; color: white; }
-                .tag-media { background: #E67E22; color: white; }
-                .tag-baixa { background: #728177; color: white; }
-                </style>
-                """
-                st.markdown(style, unsafe_allow_html=True)
-
-                # --- Diagnóstico executivo ---
-                st.markdown("**Diagnóstico executivo**")
-                html = ""
-                for insight in insights:
-                    html += "<div class='insight-item'><div class='insight-text'>"
-                    html += f"<span class='insight-icon'>{insight['icone']}</span>"
-                    classe = insight['classe']
-                    html += f"<span class='{classe}'>{insight['texto']}</span>" if classe else insight['texto']
-                    html += "</div></div>"
-                st.markdown(html, unsafe_allow_html=True)
-
-                st.markdown("<br>", unsafe_allow_html=True)
-
-                # --- Ranking de lojas por risco ---
-                st.markdown("### Ranking de lojas por risco ponderado")
-                st.caption("Score pela escala oficial: Nível 0 (5 pts - Prática ausente), Nível 1 (4 pts), Nível 2 (3 pts), Nível 3 (2 pts), Nível 4 (1 pt), Nível 5 (0 pts - Excelência).")
-
-                if ranking_lojas:
-                    html = "<table class='data-table'><thead><tr><th>Loja</th><th>Score</th><th>N.C.</th><th>Nota média</th></tr></thead><tbody>"
-                    for r in ranking_lojas[:10]:
-                        nome_loja = dict(LOJAS).get(r['loja'], r['loja'])
-                        html += "<tr>"
-                        html += f"<td><b>{r['loja']}</b> - {nome_loja}</td>"
-                        html += f"<td style='color:#D64545;font-weight:700;'>{r['score_risco']}</td>"
-                        html += f"<td>{r['total_criticas']}</td>"
-                        html += f"<td>{r['nota_media']:.1f}%</td>"
-                        html += "</tr>"
-                    html += "</tbody></table>"
-                    st.markdown(html, unsafe_allow_html=True)
-                else:
-                    st.info("Sem dados para ranking no recorte atual.")
-
-                st.markdown("<br>", unsafe_allow_html=True)
-
-                # --- Ações recomendadas ---
-                st.markdown("### Ações recomendadas por reincidência")
-
-                if acoes_recomendadas:
-                    html = "<table class='data-table'><thead><tr>"
-                    html += "<th>Tema</th><th style='text-align:center;'>Ocorr.</th><th style='text-align:center;'>Urgência</th><th>Ação recomendada</th>"
-                    html += "</tr></thead><tbody>"
-
-                    for item in acoes_recomendadas:
-                        tag_urg = f"<span class='tag tag-{item['urgencia'].replace('média','media')}'>{item['urgencia'].upper()}</span>"
-                        html += "<tr>"
-                        html += f"<td><b>{item['tema']}</b><br><span style='font-size:11px;color:#728177;'>{item['causa']}</span></td>"
-                        html += f"<td style='text-align:center;font-weight:700;color:#D64545;'>{int(item['ocorr'])}</td>"
-                        html += f"<td style='text-align:center;'>{tag_urg}</td>"
-                        html += f"<td>{item['acao']}"
-                    
-                        if item.get('lojas_afetadas') and item['lojas_afetadas'] != ['Não identificado']:
-                            html += f"<div style='font-size:0.75rem;color:#1E7A2A;margin-top:4px;'><strong>Lojas:</strong> {', '.join(item['lojas_afetadas'])}</div>"
-                    
-                        if item.get('exemplos'):
-                            codigos_unicos = set()
-                            for ex in item['exemplos']:
-                                codigo = ex['texto'].split('—')[0].strip() if '—' in ex['texto'] else ex['texto'][:10]
-                                if codigo and not codigo[0].isdigit():
-                                    codigo = ex['texto'][:10]
-                                codigos_unicos.add(f"Loja {ex['loja']}: {codigo}")
-                        
-                            if codigos_unicos:
-                                html += "<div style='font-size:0.75rem;color:#728177;margin-top:4px;'>"
-                                html += f"<strong>Itens:</strong> {', '.join(list(codigos_unicos)[:3])}"
-                                html += "</div>"
-                    
-                        html += "</td></tr>"
-
-                    html += "</tbody></table>"
-                    st.markdown(html, unsafe_allow_html=True)
-                else:
-                    st.info("Nenhuma ação recomendada no momento.")
-                
-    
-        # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 5 - RANKINGS
-    # ═══════════════════════════════════════════════════════════════════
-    with sub_tabs[4]:
-        st.markdown(cab_html(
-            "Rankings",
-            "Classificações pela auditoria mais recentes de cada loja/frente.",
-            "≡",
-        ), unsafe_allow_html=True)
-        
-        if df_auditorias.empty:
-            st.info(" Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
-        else:
-            # ── CÁLCULOS ──
-            ranking_loja, ranking_frente = calcular_rankings(df_auditorias)
-            
-            # Tópicos mais frágeis
-            topicos_medias = []
-            for i, nome in enumerate(SLOTS_CURTOS):
-                pcts = []
-                for _, row in df_auditorias.iterrows():
-                    if isinstance(row['topicos'], list) and len(row['topicos']) > i:
-                        pcts.append(row['topicos'][i].get('pct', 0))
-                if pcts:
-                    topicos_medias.append({'topico': nome, 'media': sum(pcts)/len(pcts), 'peso': POSSIVEL[i]})
-            
-            # ═══════════════════════════════════════════════════════════
-            # LINHA 1: Ranking geral + Tópicos frágeis
-            # ═══════════════════════════════════════════════════════════
-            col1, col2 = st.columns([1, 1])
-            
-            with col1:
-                st.markdown("**Ranking geral das lojas**")
-
-                if not ranking_loja.empty:
-                    frentes_por_loja_rk = df_auditorias.groupby('loja')['tipo'].nunique().to_dict()
-                    n_frentes_total_rk = len(CHECKLISTS)
-                    tem_cobertura_parcial = any(
-                        frentes_por_loja_rk.get(loja, 0) < n_frentes_total_rk for loja in ranking_loja.index
-                    )
-
-                    html = "<table style='width:100%;border-collapse:collapse;font-size:0.85rem;'>"
-                    html += "<thead><tr style='background:#0a3d1f;'>"
-                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:left;font-size:0.7rem;text-transform:uppercase;'>#</th>"
-                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:left;font-size:0.7rem;text-transform:uppercase;'>Loja</th>"
-                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Cobertura</th>"
-                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Nota</th>"
-                    html += "<th style='color:#9ecfb2;padding:0.5rem 0.8rem;text-align:center;font-size:0.7rem;text-transform:uppercase;'>Faixa</th>"
-                    html += "</tr></thead><tbody>"
-
-                    for i, (loja, nota) in enumerate(ranking_loja.items(), 1):
-                        f = faixa(nota)
-                        nome_loja = dict(LOJAS).get(loja, loja)
-                        cor = f['cor']
-                        rot = f['rot']
-                        n_frentes_loja = frentes_por_loja_rk.get(loja, 0)
-                        parcial = n_frentes_loja < n_frentes_total_rk
-                        cor_cob = '#D64545' if parcial else '#728177'
-                        bg_cob = '#fdeeee' if parcial else '#F4F7F3'
-
-                        html += "<tr style='border-bottom:1px solid #e8f3ec;'>"
-                        html += "<td style='padding:0.65rem 0.8rem;font-weight:700;color:#1E7A2A;'>" + str(i) + "</td>"
-                        html += "<td style='padding:0.65rem 0.8rem;font-weight:600;'><span style='font-weight:700;color:#1E7A2A;'>" + loja + "</span> " + nome_loja + "</td>"
-                        html += f"<td style='padding:0.65rem 0.8rem;text-align:center;'><span style='background:{bg_cob};color:{cor_cob};padding:2px 9px;border-radius:5px;font-size:0.7rem;font-weight:700;'>{n_frentes_loja}/{n_frentes_total_rk}</span></td>"
-                        html += "<td style='padding:0.65rem 0.8rem;text-align:center;font-weight:700;font-size:0.95rem;color:" + cor + ";'>" + f"{nota:.2f}" + "</td>"
-                        html += "<td style='padding:0.65rem 0.8rem;text-align:center;'><span style='background:" + cor + ";color:white;padding:2px 10px;border-radius:20px;font-size:0.65rem;font-weight:700;'>" + rot + "</span></td>"
-                        html += "</tr>"
-
-                    html += "</tbody></table>"
-                    st.markdown(html, unsafe_allow_html=True)
-                    if tem_cobertura_parcial:
-                        st.caption("ⓘ Unidades com cobertura parcial não são diretamente comparáveis às demais.")
-                else:
-                    st.info("Nenhuma loja auditada.")
-            
-            with col2:
-                st.markdown("**Blocos mais frágeis da rede** <span style='font-size:11px;color:#728177;font-weight:400'>onde a rede mais perde score</span>", unsafe_allow_html=True)
-
-                topicos_ordenados = sorted(topicos_medias, key=lambda x: x['media'])
-
-                html = ""
-                for item in topicos_ordenados:
-                    f = faixa(item['media'])
-                    cor = f['cor']
-                    media_str = f"{item['media']:.2f}"
-                    media_pct = f"{item['media']:.2f}"
-
-                    html += "<div style='display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #EEF3EE;'>"
-                    html += "<div style='width:150px;font-size:0.85rem;font-weight:600;color:#0d2a16;'>" + item['topico'] + f" <span style='color:#728177;font-weight:400'>(peso {item['peso']}%)</span></div>"
-                    html += "<div style='flex:1;height:24px;background:#F4F7F3;border-radius:6px;overflow:hidden;'>"
-                    html += "<div style='height:100%;width:" + media_pct + "%;background:" + cor + ";border-radius:6px;'></div>"
-                    html += "</div>"
-                    html += "<div style='width:50px;text-align:right;font-weight:700;font-size:0.9rem;color:" + cor + ";'>" + media_str + "</div>"
-                    html += "</div>"
-
-                st.markdown(html, unsafe_allow_html=True)
-                st.markdown(f"""
-                <div style="background:#fff8e6;border:1px solid #f0dca0;border-left:4px solid #F2C300;
-                    border-radius:8px;padding:11px 14px;font-size:13px;margin-top:16px;display:flex;gap:10px;">
-                    <span>ⓘ</span><div>O primeiro bloco tem peso {POSSIVEL[0]}% — cada ponto perdido nele custa mais que nos demais.</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            # ═══════════════════════════════════════════════════════════
-            # LINHA 2: Rankings por frente (3 colunas)
-            # ═══════════════════════════════════════════════════════════
-            col_acougue, col_frente, col_receb = st.columns(3)
-            
-            for col, tipo_key, titulo, cor_badge in [
-                (col_acougue, 'AÇO-AUD-01', 'Açougue', '#B0442E'),
-                (col_frente, 'FRE-AUD-02', 'Frente de Loja', '#2E6BB0'),
-                (col_receb, 'REC-AUD-03', 'Recebimento', '#7A4EB0')
-            ]:
-                with col:
-                    html = "<div style='background:" + cor_badge + "15;border:1px solid " + cor_badge + ";border-radius:8px;padding:12px 16px;margin-bottom:16px;'>"
-                    html += "<span style='background:" + cor_badge + ";color:white;padding:3px 12px;border-radius:15px;font-size:0.7rem;font-weight:700;text-transform:uppercase;'>" + titulo + "</span>"
-                    html += "</div>"
-                    
-                    df_tipo = df_auditorias[df_auditorias['tipo'] == tipo_key]
-
-                    if not df_tipo.empty:
-                        ultimas_tipo = df_tipo.sort_values('data').groupby('loja').last().reset_index()
-                        rank_tipo = ultimas_tipo.groupby('loja')['total'].mean().sort_values(ascending=False)
-
-                        for i, (loja, nota) in enumerate(rank_tipo.items(), 1):
-                            f = faixa(nota)
-                            cor = f['cor']
-                            nota_str = f"{nota:.2f}"
-                            nome_loja = dict(LOJAS).get(loja, loja)
-
-                            html += "<div style='display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #EEF3EE;'>"
-                            html += "<span style='font-weight:600;color:#728177;width:20px;'>" + str(i) + ".</span>"
-                            html += "<span style='font-weight:700;font-size:0.85rem;color:#0d2a16;flex:1;'>" + loja + " " + nome_loja + "</span>"
-                            html += "<span style='font-weight:700;font-size:0.9rem;color:" + cor + ";'>" + nota_str + "</span>"
-                            html += "</div>"
-                    else:
-                        html += "<div style='text-align:center;padding:20px;color:#728177;font-size:0.85rem;'>Nenhuma auditoria desta frente.</div>"
-
-                    st.markdown(html, unsafe_allow_html=True)
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 6 - MAPA DE RISCO (HEATMAP)
-    # ═══════════════════════════════════════════════════════════════════
-    with sub_tabs[5]:
-        st.markdown(cab_html(
-            "Mapa de risco",
-            "Resumo dos Tópicos da auditoria mais recentes.",
-            "▦",
-        ), unsafe_allow_html=True)
-        
-        # ─ VERIFICA SE HÁ DADOS ──
-        if df_auditorias.empty:
-            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
-        else:
-            
-            tipo_heatmap = st.selectbox(
-                "Selecione a Frente",
-                list(CHECKLISTS.keys()),
-                format_func=lambda x: f"{CHECKLISTS[x]['nome']} — {x}",
-                key="heatmap_tipo"
-            )
-            
-            df_heat = df_auditorias[df_auditorias['tipo'] == tipo_heatmap]
-            
-            if df_heat.empty:
-                st.info(f"Nenhuma auditoria de {CHECKLISTS[tipo_heatmap]['nome']} foi registrada. "
-                        "Use a aba 'Importar PDF' ou 'Lançar Manual' para registrar a primeira.")
-            else:
-                # Última auditoria por loja
-                df_heat = df_heat.sort_values('data').groupby('loja').last().reset_index()
-                
-                # ── FUNÇÃO PARA COR DO TEXTO ──
+                # Função para cor da nota
                 def cor_nota(nota):
                     if nota >= 90: return '#1E7A2A'
                     elif nota >= 80: return '#5FB65B'
@@ -2241,104 +2003,160 @@ with tabs[3]:
                 # Constrói a tabela HTML
                 html_table = """
                 <style>
-                .heatmap-table {
+                .historico-table {
                     width: 100%;
                     border-collapse: collapse;
                     font-size: 0.8rem;
                 }
-                .heatmap-table thead tr {
+                .historico-table thead tr {
                     background: #0a3d1f;
                     position: sticky;
                     top: 0;
                     z-index: 2;
                 }
-                .heatmap-table thead th {
+                .historico-table thead th {
                     color: #9ecfb2;
                     font-weight: 700;
                     font-size: 0.66rem;
                     letter-spacing: 0.09em;
                     text-transform: uppercase;
                     padding: 0.8rem 0.8rem;
-                    text-align: center;
+                    text-align: left;
                     border-bottom: 3px solid #f8c10a;
                     white-space: nowrap;
                 }
-                .heatmap-table thead th:first-child {
-                    text-align: left;
-                    min-width: 180px;
+                .historico-table thead th.center {
+                    text-align: center;
                 }
-                .heatmap-table tbody tr {
+                .historico-table tbody tr {
                     border-bottom: 1px solid #e8f3ec;
                     transition: background 0.12s;
                 }
-                .heatmap-table tbody tr:hover {
+                .historico-table tbody tr:hover {
                     background: #eaf7ef;
                 }
-                .heatmap-table tbody tr:nth-child(even) {
+                .historico-table tbody tr:nth-child(even) {
                     background: #f4fbf6;
                 }
-                .heatmap-table tbody tr:nth-child(even):hover {
+                .historico-table tbody tr:nth-child(even):hover {
                     background: #e2f4e8;
                 }
-                .heatmap-table tbody td {
+                .historico-table tbody td {
                     padding: 0.65rem 0.8rem;
                     color: #0d2a16;
                     vertical-align: middle;
                     white-space: nowrap;
                     font-size: 0.8rem;
+                }
+                .historico-table tbody td.center {
                     text-align: center;
-                    font-weight: 600;
                 }
-                .heatmap-table tbody td:first-child {
-                    text-align: left;
-                    font-weight: 700;
-                    color: #0a3d1f;
+                .badge-tipo {
+                    display: inline-block;
+                    padding: 2px 10px;
+                    border-radius: 20px;
+                    font-size: 0.6rem;
+                    font-weight: 800;
+                    letter-spacing: 0.05em;
+                    text-transform: uppercase;
+                    color: white;
                 }
+                .badge-acougue { background: #B0442E; }
+                .badge-frente { background: #2E6BB0; }
+                .badge-recebimento { background: #7A4EB0; }
+                
+                .badge-status {
+                    display: inline-block;
+                    padding: 2px 10px;
+                    border-radius: 20px;
+                    font-size: 0.6rem;
+                    font-weight: 800;
+                    letter-spacing: 0.05em;
+                    text-transform: uppercase;
+                }
+                .badge-excelente { background: #1E7A2A; color: white; }
+                .badge-bom { background: #5FB65B; color: white; }
+                .badge-atencao { background: #E8B23A; color: #12331C; }
+                .badge-risco { background: #E67E22; color: white; }
+                .badge-critico { background: #D64545; color: white; }
+                
                 .nota-num {
                     font-family: 'Barlow Semi Condensed', sans-serif;
                     font-weight: 700;
                     font-size: 0.95rem;
                 }
+                .codigo-tipo {
+                    font-size: 0.7rem;
+                    color: #728177;
+                    font-family: monospace;
+                }
                 </style>
                 <div style="overflow-x:auto;max-height:56vh;overflow-y:auto;border:1px solid #DDE6DC;border-radius:12px;">
-                <table class="heatmap-table">
+                <table class="historico-table">
                     <thead>
                         <tr>
+                            <th>Data</th>
                             <th>Loja</th>
-                """ + "".join(
-                    f"<th>{nome}<br><span style='font-weight:400;color:#9aa89c'>{POSSIVEL[i]}%</span></th>"
-                    for i, nome in enumerate(SLOTS_CURTOS)
-                ) + """
-                            <th>Nota</th>
+                            <th>Frente</th>
+                            <th>Cód.</th>
+                            <th class="center">Aderência</th>
+                            <th class="center">Maturidade</th>
+                            <th class="center">Conhecimento</th>
+                            <th class="center">Eficiência</th>
+                            <th class="center">Gaps/Estrut.</th>
+                            <th class="center">Nota</th>
+                            <th class="center">Nível</th>
                         </tr>
                     </thead>
                     <tbody>
                 """
                 
-                for _, row in df_heat.iterrows():
+                for _, row in df_hist.iterrows():
+                    # Data
+                    data_obj = pd.to_datetime(row['data'])
+                    data_str = data_obj.strftime('%d/%m/%Y')
+                    
+                    # Loja
                     loja_str = f"{row['loja']} - {dict(LOJAS).get(row['loja'], '')}"
                     
-                    # Tópicos - cores apenas no texto dos números
+                    # Frente e badge
+                    tipo_info = cores_tipo.get(row['tipo'], ('', ''))
+                    frente_nome = tipo_info[0]
+                    badge_class = tipo_info[1]
+                    frente_html = f'<span class="badge-tipo {badge_class}">{frente_nome}</span>' if badge_class else row['tipo']
+                    
+                    # Código
+                    codigo_html = f'<span class="codigo-tipo">{row["tipo"]}</span>'
+                    
+                    # Tópicos
                     topicos_html = ""
                     if isinstance(row['topicos'], list):
                         for i in range(5):
                             pct = row['topicos'][i].get('pct', 0) if i < len(row['topicos']) else 0
                             cor = cor_nota(pct)
-                            topicos_html += f'<td style="color:{cor};font-weight:700;">{pct:.2f}</td>'
+                            topicos_html += f'<td class="center" style="font-weight:600;color:{cor}">{pct:.2f}</td>'
                     else:
                         for _ in range(5):
-                            topicos_html += '<td>—</td>'
+                            topicos_html += '<td class="center">—</td>'
                     
-                    # Nota Total - cor no texto
+                    # Nota
                     nota = row['total']
                     cor = cor_nota(nota)
-                    nota_html = f'<td><span class="nota-num" style="color:{cor}">{nota:.2f}</span></td>'
+                    nota_html = f'<td class="center"><span class="nota-num" style="color:{cor}">{nota:.2f}</span></td>'
+                    
+                    # Nível
+                    nivel = nivel_maturidade(nota)
+                    nivel_html = f'<td class="center"><span class="badge-status" style="background:{NIVEIS[nivel]["hex"]};color:white">N{nivel}</span></td>'
                     
                     html_table += f"""
                         <tr>
+                            <td>{data_str}</td>
                             <td>{loja_str}</td>
+                            <td>{frente_html}</td>
+                            <td>{codigo_html}</td>
                             {topicos_html}
                             {nota_html}
+                            {nivel_html}
                         </tr>
                     """
                 
@@ -2351,39 +2169,27 @@ with tabs[3]:
                 # ── RENDERIZA O HTML COM components ──
                 st.components.v1.html(html_table, height=500, scrolling=True)
                 
-                st.caption(f"{len(df_heat)} loja(s) auditada(s) · Exibindo a última auditoria de cada loja")
+                st.caption(f"{len(df_hist)} registro(s) · {df_hist['loja'].nunique()} lojas auditadas")
                 
-                # ── LEGENDA (gerada a partir de faixa(), sem duplicar valores) ──
-                faixas_ref = [(95, '≥ 90'), (85, '80-89'), (75, '70-79'), (65, '60-69'), (30, '< 60')]
-                legenda_html = '<div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.85rem;color:#728177;margin-top:16px;padding-top:12px;border-top:1px solid #EEF3EE;">'
-                for amostra, faixa_txt in faixas_ref:
-                    fx = faixa(amostra)
-                    legenda_html += (
-                        '<span style="display:flex;align-items:center;gap:6px;">'
-                        f'<span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:{fx["cor"]};"></span>'
-                        f'{fx["rot"]} ({faixa_txt})</span>'
-                    )
-                legenda_html += '</div>'
-                st.markdown(legenda_html, unsafe_allow_html=True)
-                
-                # ── EXPORTAR E ATUALIZAR ──
+                # ── EXPORTAR HISTÓRICO ──
                 st.markdown("---")
                 col1, col2 = st.columns(2)
                 with col1:
-                    csv_heat = df_heat.to_csv(index=False, sep=';')
+                    csv_hist = df_hist.to_csv(index=False, sep=';')
                     st.download_button(
-                        " Exportar Mapa de Risco CSV",
-                        data=csv_heat,
-                        file_name=f"mapa_risco_{tipo_heatmap}_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                        "📊 Exportar Histórico CSV",
+                        data=csv_hist,
+                        file_name=f"historico_auditorias_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
                         mime="text/csv",
                         use_container_width=True
                     )
                 with col2:
-                    if st.button("🔄 Atualizar Mapa", use_container_width=True):
+                    if st.button("🔄 Atualizar Histórico", use_container_width=True):
                         st.cache_data.clear()
                         st.rerun()
-                    
-                    
+            else:
+                st.info("Nenhum registro com os filtros selecionados.")
+
     # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 7 - IMPORTAR PDF
     # ═══════════════════════════════════════════════════════════════════
@@ -3404,414 +3210,9 @@ with tabs[3]:
             st.rerun()
 
     # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 9 - NÃO CONFORMIDADES
+    # SUB-ABA 9 - DADOS & EXPORTAÇÃO
     # ═══════════════════════════════════════════════════════════════════
     with sub_tabs[8]:
-        st.markdown(cab_html(
-            "Não conformidades",
-            "Ciclo de vida completo das NCs registradas: status, responsável, prazo e ação corretiva.",
-            "✕",
-        ), unsafe_allow_html=True)
-
-        if df_auditorias.empty:
-            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
-        else:
-            ncs_all = todas_ncs(df_auditorias)
-
-            if not ncs_all:
-                st.info("Nenhuma não conformidade registrada ainda.")
-            else:
-                ncs_abertas_all = [n for n in ncs_all if n.get('status') != 'Concluída']
-                ncs_vencidas_all = [n for n in ncs_abertas_all if vencida(n)]
-                ncs_alta_all = [n for n in ncs_abertas_all if n.get('criticidade') == 'Alta']
-                ncs_sem_pop_all = [n for n in ncs_abertas_all if not (n.get('pop_nome') or '').strip()]
-
-                # ── KPIs ──
-                k1, k2, k3, k4 = st.columns(4)
-                for col, rot, num, cor_kpi in [
-                    (k1, 'Em aberto', len(ncs_abertas_all), '#D64545' if ncs_abertas_all else '#1E7A2A'),
-                    (k2, 'Prazo vencido', len(ncs_vencidas_all), '#D64545' if ncs_vencidas_all else '#1E7A2A'),
-                    (k3, 'Criticidade alta', len(ncs_alta_all), '#D64545' if ncs_alta_all else '#1E7A2A'),
-                    (k4, 'Sem rastreio ao POP', len(ncs_sem_pop_all), '#D64545' if ncs_sem_pop_all else '#1E7A2A'),
-                ]:
-                    with col:
-                        st.markdown(f"""
-                        <div class="aud-card aud-kpi">
-                            <div class="rot">{rot}</div>
-                            <div class="num">{num}</div>
-                            <div class="faixa"><i style="width:100%;background:{cor_kpi}"></i></div>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                st.markdown("<br>", unsafe_allow_html=True)
-
-                # ── FILTROS ──
-                fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
-                with fc1:
-                    f_loja = st.selectbox("Loja", ["Todas"] + sorted({n['_loja'] for n in ncs_all if n.get('_loja')}), key="nc_f_loja")
-                with fc2:
-                    f_tipo = st.selectbox("Frente", ["Todas"] + list(CHECKLISTS.keys()),
-                                           format_func=lambda x: CHECKLISTS[x]['nome'] if x in CHECKLISTS else x, key="nc_f_tipo")
-                with fc3:
-                    f_crit = st.selectbox("Criticidade", ["Todas", "Alta", "Média", "Baixa"], key="nc_f_crit")
-                with fc4:
-                    f_status = st.selectbox("Status", ["Todas", "Aberta", "Em andamento", "Concluída"], key="nc_f_status")
-                with fc5:
-                    f_pop = st.selectbox("Rastreio ao POP", ["Todas", "Com POP", "Sem POP"], key="nc_f_pop")
-                with fc6:
-                    f_venc = st.selectbox("Prazo", ["Todas", "Vencidas"], key="nc_f_venc")
-
-                ncs_filtradas = ncs_all
-                if f_loja != "Todas":
-                    ncs_filtradas = [n for n in ncs_filtradas if n.get('_loja') == f_loja]
-                if f_tipo != "Todas":
-                    ncs_filtradas = [n for n in ncs_filtradas if n.get('_tipo') == f_tipo]
-                if f_crit != "Todas":
-                    ncs_filtradas = [n for n in ncs_filtradas if n.get('criticidade') == f_crit]
-                if f_status != "Todas":
-                    ncs_filtradas = [n for n in ncs_filtradas if (n.get('status') or 'Aberta') == f_status]
-                if f_pop == "Com POP":
-                    ncs_filtradas = [n for n in ncs_filtradas if (n.get('pop_nome') or '').strip()]
-                elif f_pop == "Sem POP":
-                    ncs_filtradas = [n for n in ncs_filtradas if not (n.get('pop_nome') or '').strip()]
-                if f_venc == "Vencidas":
-                    ncs_filtradas = [n for n in ncs_filtradas if vencida(n)]
-
-                st.caption(f"{len(ncs_filtradas)} não conformidade(s) no recorte atual.")
-
-                # ── EXPORTAR CSV DAS NCs FILTRADAS ──
-                if ncs_filtradas:
-                    df_export_nc = pd.DataFrame([{
-                        'Loja': n.get('_loja'), 'Frente': CHECKLISTS.get(n.get('_tipo'), {}).get('nome', n.get('_tipo')),
-                        'Data auditoria': n.get('_data'), 'Item': n.get('codigo_item'), 'Descrição': n.get('texto'),
-                        'POP': n.get('pop_nome'), 'Ponto do POP': n.get('ponto_pop'), 'Criticidade': n.get('criticidade'),
-                        'Status': n.get('status'), 'Responsável': n.get('responsavel'), 'Prazo': n.get('prazo'),
-                        'Ação corretiva': n.get('acao_corretiva'),
-                    } for n in ncs_filtradas])
-                    st.download_button(
-                        "📊 Exportar NCs filtradas (CSV)", data=df_export_nc.to_csv(index=False, sep=';'),
-                        file_name=f"nao_conformidades_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv", key="export_csv_ncs",
-                    )
-
-                st.markdown("---")
-
-                # ── CARTÕES EDITÁVEIS ──
-                for i, nc in enumerate(ncs_filtradas):
-                    frente_nome = CHECKLISTS.get(nc.get('_tipo'), {}).get('nome', nc.get('_tipo'))
-                    atrasada = vencida(nc)
-                    cor_crit = {'Alta': '#D64545', 'Média': '#E8B23A', 'Baixa': '#728177'}.get(nc.get('criticidade'), '#728177')
-                    titulo = f"[{nc.get('_loja')}] {frente_nome} · {nc.get('codigo_item') or '—'} — {(nc.get('texto') or '')[:70]}"
-                    if atrasada:
-                        titulo = "⚠ " + titulo
-
-                    with st.expander(titulo, expanded=False):
-                        st.markdown(f"**Frente:** {frente_nome} · **Loja:** {nc.get('_loja')} · **Data da auditoria:** {nc.get('_data')}")
-                        st.markdown(nc.get('texto') or '')
-                        pop_txt = nc.get('pop_nome') or '— sem vínculo —'
-                        if nc.get('pop_codigo_2'):
-                            pop_txt = f"{nc['pop_codigo_2']} — {pop_txt}"
-                        if nc.get('ponto_pop'):
-                            pop_txt += f" ({nc['ponto_pop']})"
-                        st.caption(f"POP: {pop_txt}")
-
-                        key_base = f"ncedit_{nc['_auditoria_id']}_{nc['_idx']}"
-                        ce1, ce2, ce3 = st.columns(3)
-                        with ce1:
-                            novo_status = st.selectbox(
-                                "Status", ['Aberta', 'Em andamento', 'Concluída'],
-                                index=['Aberta', 'Em andamento', 'Concluída'].index(nc.get('status') or 'Aberta'),
-                                key=f"{key_base}_status",
-                            )
-                        with ce2:
-                            novo_resp = st.text_input("Responsável", value=nc.get('responsavel', ''), key=f"{key_base}_resp")
-                        with ce3:
-                            prazo_atual = None
-                            if nc.get('prazo'):
-                                try:
-                                    prazo_atual = datetime.strptime(nc['prazo'], '%Y-%m-%d')
-                                except Exception:
-                                    prazo_atual = None
-                            novo_prazo = st.date_input("Prazo", value=prazo_atual, key=f"{key_base}_prazo")
-                        nova_acao = st.text_area("Ação corretiva", value=nc.get('acao_corretiva', ''), key=f"{key_base}_acao", height=70)
-
-                        if st.button("💾 Salvar alterações", key=f"{key_base}_save"):
-                            aud_id = int(nc['_auditoria_id'])
-                            row_aud = df_auditorias[df_auditorias['id'] == aud_id]
-                            if row_aud.empty:
-                                st.error("Auditoria de origem não encontrada.")
-                            else:
-                                criticas_originais = row_aud.iloc[0]['criticas']
-                                criticas_norm = [normalizar_critica(c) for c in criticas_originais]
-                                idx_nc = nc['_idx']
-                                if idx_nc < len(criticas_norm):
-                                    criticas_norm[idx_nc]['status'] = novo_status
-                                    criticas_norm[idx_nc]['responsavel'] = novo_resp.strip()
-                                    criticas_norm[idx_nc]['prazo'] = novo_prazo.strftime('%Y-%m-%d') if novo_prazo else ''
-                                    criticas_norm[idx_nc]['acao_corretiva'] = nova_acao.strip()
-                                    try:
-                                        atualizar_auditoria(aud_id, criticas_norm)
-                                        st.success("Não conformidade atualizada.")
-                                        st.cache_data.clear()
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Erro ao salvar: {e}")
-
-    # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 10 - HISTÓRICO
-    # ═══════════════════════════════════════════════════════════════════
-    with sub_tabs[9]:
-        st.markdown(cab_html(
-            "Histórico de auditorias",
-            "Todas as auditorias registradas.",
-            "☰",
-        ), unsafe_allow_html=True)
-        
-        # ── VERIFICA SE HÁ DADOS ──
-        if df_auditorias.empty:
-            st.info("📌 Nenhuma auditoria registrada. Use a aba 'Importar PDF' ou 'Lançar Manual' para começar.")
-        else:
-            from datetime import datetime
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                loja_filtro_hist = st.selectbox(
-                    "Filtrar por Loja",
-                    ["Todas"] + sorted(df_auditorias['loja'].unique().tolist()),
-                    key="hist_loja_final"
-                )
-            with col2:
-                tipo_filtro_hist = st.selectbox(
-                    "Filtrar por Frente",
-                    ["Todas"] + df_auditorias['tipo'].unique().tolist(),
-                    key="hist_tipo_final"
-                )
-            
-            df_hist = df_auditorias.copy()
-            if loja_filtro_hist != "Todas":
-                df_hist = df_hist[df_hist['loja'] == loja_filtro_hist]
-            if tipo_filtro_hist != "Todas":
-                df_hist = df_hist[df_hist['tipo'] == tipo_filtro_hist]
-            
-            # ── CRIA TABELA ESTILIZADA ──
-            if not df_hist.empty:
-                # Mapeamento de cores por tipo
-                cores_tipo = {
-                    'AÇO-AUD-01': ('Açougue', 'badge-acougue'),
-                    'FRE-AUD-02': ('Frente de Loja', 'badge-frente'),
-                    'REC-AUD-03': ('Recebimento', 'badge-recebimento')
-                }
-                
-                # Função para badge de nota
-                def badge_nota(nota):
-                    if nota >= 90: return f'<span class="badge-status badge-excelente">Excelente</span>'
-                    elif nota >= 80: return f'<span class="badge-status badge-bom">Bom</span>'
-                    elif nota >= 70: return f'<span class="badge-status badge-atencao">Atenção</span>'
-                    elif nota >= 60: return f'<span class="badge-status badge-risco">Risco</span>'
-                    else: return f'<span class="badge-status badge-critico">Crítico</span>'
-                
-                # Função para cor da nota
-                def cor_nota(nota):
-                    if nota >= 90: return '#1E7A2A'
-                    elif nota >= 80: return '#5FB65B'
-                    elif nota >= 70: return '#E8B23A'
-                    elif nota >= 60: return '#E67E22'
-                    else: return '#D64545'
-                
-                # Constrói a tabela HTML
-                html_table = """
-                <style>
-                .historico-table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    font-size: 0.8rem;
-                }
-                .historico-table thead tr {
-                    background: #0a3d1f;
-                    position: sticky;
-                    top: 0;
-                    z-index: 2;
-                }
-                .historico-table thead th {
-                    color: #9ecfb2;
-                    font-weight: 700;
-                    font-size: 0.66rem;
-                    letter-spacing: 0.09em;
-                    text-transform: uppercase;
-                    padding: 0.8rem 0.8rem;
-                    text-align: left;
-                    border-bottom: 3px solid #f8c10a;
-                    white-space: nowrap;
-                }
-                .historico-table thead th.center {
-                    text-align: center;
-                }
-                .historico-table tbody tr {
-                    border-bottom: 1px solid #e8f3ec;
-                    transition: background 0.12s;
-                }
-                .historico-table tbody tr:hover {
-                    background: #eaf7ef;
-                }
-                .historico-table tbody tr:nth-child(even) {
-                    background: #f4fbf6;
-                }
-                .historico-table tbody tr:nth-child(even):hover {
-                    background: #e2f4e8;
-                }
-                .historico-table tbody td {
-                    padding: 0.65rem 0.8rem;
-                    color: #0d2a16;
-                    vertical-align: middle;
-                    white-space: nowrap;
-                    font-size: 0.8rem;
-                }
-                .historico-table tbody td.center {
-                    text-align: center;
-                }
-                .badge-tipo {
-                    display: inline-block;
-                    padding: 2px 10px;
-                    border-radius: 20px;
-                    font-size: 0.6rem;
-                    font-weight: 800;
-                    letter-spacing: 0.05em;
-                    text-transform: uppercase;
-                    color: white;
-                }
-                .badge-acougue { background: #B0442E; }
-                .badge-frente { background: #2E6BB0; }
-                .badge-recebimento { background: #7A4EB0; }
-                
-                .badge-status {
-                    display: inline-block;
-                    padding: 2px 10px;
-                    border-radius: 20px;
-                    font-size: 0.6rem;
-                    font-weight: 800;
-                    letter-spacing: 0.05em;
-                    text-transform: uppercase;
-                }
-                .badge-excelente { background: #1E7A2A; color: white; }
-                .badge-bom { background: #5FB65B; color: white; }
-                .badge-atencao { background: #E8B23A; color: #12331C; }
-                .badge-risco { background: #E67E22; color: white; }
-                .badge-critico { background: #D64545; color: white; }
-                
-                .nota-num {
-                    font-family: 'Barlow Semi Condensed', sans-serif;
-                    font-weight: 700;
-                    font-size: 0.95rem;
-                }
-                .codigo-tipo {
-                    font-size: 0.7rem;
-                    color: #728177;
-                    font-family: monospace;
-                }
-                </style>
-                <div style="overflow-x:auto;max-height:56vh;overflow-y:auto;border:1px solid #DDE6DC;border-radius:12px;">
-                <table class="historico-table">
-                    <thead>
-                        <tr>
-                            <th>Data</th>
-                            <th>Loja</th>
-                            <th>Frente</th>
-                            <th>Cód.</th>
-                            <th class="center">Aderência</th>
-                            <th class="center">Maturidade</th>
-                            <th class="center">Conhecimento</th>
-                            <th class="center">Eficiência</th>
-                            <th class="center">Gaps/Estrut.</th>
-                            <th class="center">Nota</th>
-                            <th class="center">Nível</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                """
-                
-                for _, row in df_hist.iterrows():
-                    # Data
-                    data_obj = pd.to_datetime(row['data'])
-                    data_str = data_obj.strftime('%d/%m/%Y')
-                    
-                    # Loja
-                    loja_str = f"{row['loja']} - {dict(LOJAS).get(row['loja'], '')}"
-                    
-                    # Frente e badge
-                    tipo_info = cores_tipo.get(row['tipo'], ('', ''))
-                    frente_nome = tipo_info[0]
-                    badge_class = tipo_info[1]
-                    frente_html = f'<span class="badge-tipo {badge_class}">{frente_nome}</span>' if badge_class else row['tipo']
-                    
-                    # Código
-                    codigo_html = f'<span class="codigo-tipo">{row["tipo"]}</span>'
-                    
-                    # Tópicos
-                    topicos_html = ""
-                    if isinstance(row['topicos'], list):
-                        for i in range(5):
-                            pct = row['topicos'][i].get('pct', 0) if i < len(row['topicos']) else 0
-                            cor = cor_nota(pct)
-                            topicos_html += f'<td class="center" style="font-weight:600;color:{cor}">{pct:.2f}</td>'
-                    else:
-                        for _ in range(5):
-                            topicos_html += '<td class="center">—</td>'
-                    
-                    # Nota
-                    nota = row['total']
-                    cor = cor_nota(nota)
-                    nota_html = f'<td class="center"><span class="nota-num" style="color:{cor}">{nota:.2f}</span></td>'
-                    
-                    # Nível
-                    nivel = nivel_maturidade(nota)
-                    nivel_html = f'<td class="center"><span class="badge-status" style="background:{NIVEIS[nivel]["hex"]};color:white">N{nivel}</span></td>'
-                    
-                    html_table += f"""
-                        <tr>
-                            <td>{data_str}</td>
-                            <td>{loja_str}</td>
-                            <td>{frente_html}</td>
-                            <td>{codigo_html}</td>
-                            {topicos_html}
-                            {nota_html}
-                            {nivel_html}
-                        </tr>
-                    """
-                
-                html_table += """
-                    </tbody>
-                </table>
-                </div>
-                """
-                
-                # ── RENDERIZA O HTML COM components ──
-                st.components.v1.html(html_table, height=500, scrolling=True)
-                
-                st.caption(f"{len(df_hist)} registro(s) · {df_hist['loja'].nunique()} lojas auditadas")
-                
-                # ── EXPORTAR HISTÓRICO ──
-                st.markdown("---")
-                col1, col2 = st.columns(2)
-                with col1:
-                    csv_hist = df_hist.to_csv(index=False, sep=';')
-                    st.download_button(
-                        "📊 Exportar Histórico CSV",
-                        data=csv_hist,
-                        file_name=f"historico_auditorias_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                with col2:
-                    if st.button("🔄 Atualizar Histórico", use_container_width=True):
-                        st.cache_data.clear()
-                        st.rerun()
-            else:
-                st.info("Nenhum registro com os filtros selecionados.")
-
-    # ═══════════════════════════════════════════════════════════════════
-    # SUB-ABA 11 - DADOS & EXPORTAÇÃO
-    # ═══════════════════════════════════════════════════════════════════
-    with sub_tabs[10]:
         st.markdown(cab_html(
             "Dados e exportação",
             "Situação do armazenamento, exportações para Excel e consolidação entre auditores.",
@@ -3825,8 +3226,9 @@ with tabs[3]:
         st.markdown(f"""
         <div style="background:#EFFAF0;border:1px solid #BFE6C2;border-left:4px solid #1E7A2A;border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:16px;display:flex;gap:10px;">
             <span style="font-size:18px;">✓</span>
-            <div><b>Base compartilhada (Supabase).</b> Toda auditoria registrada aqui fica gravada na base da equipe
-            e aparece para quem abrir o painel em qualquer computador, com atualização ao vivo.</div>
+            <div><b>Dados compartilhados em tempo real.</b> Toda auditoria registrada aqui fica salva
+            automaticamente e aparece para qualquer pessoa que abrir o painel, em qualquer computador,
+            na mesma hora.</div>
         </div>
         """, unsafe_allow_html=True)
 
