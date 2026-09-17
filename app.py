@@ -872,6 +872,10 @@ with tabs[3]:
         'REC-AUD-03': {'nome': 'Recebimento', 'cor': '#7A4EB0', 'slots': [
             'Aderência ao processo', 'Maturidade operacional', 
             'Conhecimento e disseminação', 'Eficiência / performance', 'Gaps e processos não mapeados'
+        ]},
+        'ATA-AUD-04': {'nome': 'Vendas Atacado', 'cor': '#C08A1E', 'slots': [
+            'Aderência ao processo', 'Maturidade operacional',
+            'Conhecimento e disseminação', 'Eficiência / performance', 'Gaps e processos não mapeados'
         ]}
     }
     
@@ -879,23 +883,45 @@ with tabs[3]:
     SLOTS_CURTOS = ['Aderência', 'Maturidade', 'Conhecimento', 'Eficiência', 'Gaps/Estrut.']
     LETRAS_BLOCO = ['A', 'B', 'C', 'D', 'E']
     
+    # Régua oficial da Auditoria — deve permanecer idêntica à do HTML v2.
+    # A nota dos itens do checklist é outra régua: itens com nível <= 3 são
+    # pontos críticos elegíveis para NC. Não misturar as duas regras.
+    FAIXAS_AUDITORIA = [
+        {'min': 90, 'rot': 'Referência',         'risco': 'Mínimo',  'prio': 'Expansão — disseminar o modelo para outras unidades', 'hex': '#1E7A2A'},
+        {'min': 76, 'rot': 'Avançado',           'risco': 'Mínimo',  'prio': 'Excelência — benchmark interno e mentoria',            'hex': '#5FB65B'},
+        {'min': 61, 'rot': 'Adequado',           'risco': 'Baixo',   'prio': 'Melhoria contínua — revisão mensal dos gaps',          'hex': '#E8B23A'},
+        {'min': 41, 'rot': 'Em Desenvolvimento', 'risco': 'Médio',   'prio': 'Prioritária — plano de ação em 60 dias',               'hex': '#E67E22'},
+        {'min': 21, 'rot': 'Insuficiente',       'risco': 'Alto',    'prio': 'Urgente — plano estrutural em até 30 dias',            'hex': '#D64545'},
+        {'min': 0,  'rot': 'Crítico',            'risco': 'Crítico', 'prio': 'Imediata — intervenção emergencial',                   'hex': '#8E2020'},
+    ]
+
     def faixa(nota):
-        if nota >= 90: return {'rot': 'Excelente', 'cor': '#1E7A2A', 'hex': '#1E7A2A'}
-        if nota >= 80: return {'rot': 'Bom', 'cor': '#5FB65B', 'hex': '#5FB65B'}
-        if nota >= 70: return {'rot': 'Atenção', 'cor': '#E8B23A', 'hex': '#E8B23A'}
-        if nota >= 60: return {'rot': 'Risco', 'cor': '#E67E22', 'hex': '#E67E22'}
-        return {'rot': 'Crítico', 'cor': '#D64545', 'hex': '#D64545'}
+        try:
+            valor = float(nota)
+        except (TypeError, ValueError):
+            valor = 0.0
+        for item in FAIXAS_AUDITORIA:
+            if valor >= item['min']:
+                return {'rot': item['rot'], 'cor': item['hex'], 'hex': item['hex'],
+                        'risco': item['risco'], 'prio': item['prio'], 'min': item['min']}
+        item = FAIXAS_AUDITORIA[-1]
+        return {'rot': item['rot'], 'cor': item['hex'], 'hex': item['hex'],
+                'risco': item['risco'], 'prio': item['prio'], 'min': item['min']}
+
+    def faixa_intervalo(indice: int) -> str:
+        item = FAIXAS_AUDITORIA[indice]
+        limite_superior = 100 if indice == 0 else FAIXAS_AUDITORIA[indice - 1]['min'] - 1
+        return f"{item['min']}–{limite_superior}"
 
     def legenda_faixa_html() -> str:
         """Legenda da régua de classificação (mesmos cortes de faixa()), para repetir em toda aba que exiba a cor/rótulo de uma nota."""
-        faixas_ref = [(95, '≥ 90'), (85, '80-89'), (75, '70-79'), (65, '60-69'), (30, '< 60')]
         html = '<div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.85rem;color:#728177;margin-top:16px;padding-top:12px;border-top:1px solid #EEF3EE;">'
-        for amostra, faixa_txt in faixas_ref:
-            fx = faixa(amostra)
+        for indice, item in enumerate(FAIXAS_AUDITORIA):
+            fx = faixa(item['min'])
             html += (
                 '<span style="display:flex;align-items:center;gap:6px;">'
                 f'<span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:{fx["cor"]};"></span>'
-                f'{fx["rot"]} ({faixa_txt})</span>'
+                f'{fx["rot"]} ({faixa_intervalo(indice)})</span>'
             )
         html += '</div>'
         return html
@@ -939,52 +965,67 @@ with tabs[3]:
                     achados.append(trecho)
         return achados
 
-    # ── BUSCA POR PALAVRAS-CHAVE NO CONTEÚDO REAL DO POP ──
-    # Quando o item do checklist não cita um ponto explícito (ANEXO/Seção/p.X),
-    # tenta achar a página do POP-base com mais vocabulário em comum com o item.
-    # Não é correlação semântica (IA) — é sobreposição de palavras significativas,
-    # suficiente para itens que reusam os termos do próprio POP.
-    STOPWORDS_POP = {
-        'a','ao','aos','as','com','como','da','das','de','dela','delas','dele',
-        'deles','do','dos','e','em','entre','essa','essas','esse','esses','esta',
-        'estao','estão','estas','este','estes','existe','existem','foi','há','na',
-        'nas','no','nos','num','numa','o','os','ou','para','pela','pelas','pelo',
-        'pelos','por','qual','quais','que','sao','são','se','sem','ser','seu',
-        'seus','sua','suas','tem','tém','têm','um','uma','umas','uns',
-    }
+    def _baixar_pdf_pop(link_documento: str) -> bytes:
+        """Obtém o PDF do POP por arquivo local, URL direta ou Google Drive.
 
-    def _palavras_chave(texto: str) -> list:
-        palavras = re.findall(r'[a-zà-úA-ZÀ-Ú]{4,}', texto or '')
-        vistas, resultado = set(), []
-        for p in palavras:
-            chave = p.lower()
-            if chave in STOPWORDS_POP or chave in vistas:
-                continue
-            vistas.add(chave)
-            resultado.append(chave)
-        return resultado
+        O importador nunca trata o nome do arquivo como se fosse conteúdo lido:
+        quando o PDF não pode ser baixado, devolvemos bytes vazios para a UI
+        bloquear o salvamento e pedir a correção do vínculo no cadastro do POP.
+        """
+        link = str(link_documento or '').strip()
+        if not link:
+            return b''
+        if os.path.isfile(link):
+            try:
+                with open(link, 'rb') as arquivo:
+                    return arquivo.read()
+            except OSError:
+                return b''
+
+        urls = []
+        file_id = None
+        match = re.search(r'/file/d/([a-zA-Z0-9_-]+)', link) or re.search(r'[?&]id=([a-zA-Z0-9_-]+)', link)
+        if match:
+            file_id = match.group(1)
+            urls.append(f'https://drive.google.com/uc?export=download&id={file_id}')
+        if re.match(r'^https?://', link, re.IGNORECASE):
+            urls.append(link)
+        if not urls:
+            return b''
+
+        try:
+            sessao = requests.Session()
+            cabecalho = {'User-Agent': 'Mozilla/5.0'}
+            for url in urls:
+                resposta = sessao.get(url, headers=cabecalho, timeout=30)
+                if not resposta.ok:
+                    continue
+                conteudo = resposta.content
+                if conteudo.startswith(b'%PDF'):
+                    return conteudo
+
+                # Arquivos grandes do Drive podem exigir uma confirmação em HTML.
+                confirm = re.search(r'name="confirm" value="([^"]+)"', resposta.text or '')
+                if not confirm:
+                    confirm = re.search(r'[?&]confirm=([0-9A-Za-z_-]+)', resposta.text or '')
+                if confirm and file_id:
+                    url_confirmado = f'https://drive.google.com/uc?export=download&confirm={confirm.group(1)}&id={file_id}'
+                    resposta_confirmada = sessao.get(url_confirmado, headers=cabecalho, timeout=30)
+                    if resposta_confirmada.ok and resposta_confirmada.content.startswith(b'%PDF'):
+                        return resposta_confirmada.content
+        except requests.RequestException:
+            return b''
+        return b''
 
     @st.cache_data(ttl=3600, show_spinner=False)
     def _texto_pop_por_pagina(link_documento: str) -> list:
-        """Baixa o PDF do POP (link público do Drive) e devolve o texto de cada página."""
-        if not link_documento:
-            return []
-        file_id = None
-        m = re.search(r'/file/d/([a-zA-Z0-9_-]+)', link_documento) or re.search(r'[?&]id=([a-zA-Z0-9_-]+)', link_documento)
-        if m:
-            file_id = m.group(1)
-        if not file_id:
+        """Baixa o PDF do POP e devolve o texto extraído de cada página."""
+        conteudo = _baixar_pdf_pop(link_documento)
+        if not conteudo:
             return []
         try:
-            resp = requests.get(
-                f'https://drive.google.com/uc?export=download&id={file_id}', timeout=20,
-            )
-            resp.raise_for_status()
-            paginas = []
-            with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
-                for page in pdf.pages:
-                    paginas.append(page.extract_text() or '')
-            return paginas
+            with pdfplumber.open(io.BytesIO(conteudo)) as pdf:
+                return [page.extract_text() or '' for page in pdf.pages]
         except Exception:
             return []
 
@@ -1015,48 +1056,190 @@ with tabs[3]:
         return ''
 
     def sugerir_ponto_pop_por_contexto(texto_item: str, link_documento: str) -> str:
-        """Seção/página do POP com mais palavras-chave relevantes em comum com o item.
-
-        Pondera cada palavra pelo inverso da frequência entre as páginas (IDF
-        simples), para que termos genéricos que aparecem em quase todo o
-        documento (ex.: o próprio nome do processo, repetido no cabeçalho de
-        cada página) não dominem o resultado sobre termos mais discriminativos.
-        Devolve '' se não houver nenhuma página com sinal relevante.
-        """
+        """Localiza evidência literal no POP para orientar a não conformidade."""
         paginas = _texto_pop_por_pagina(link_documento)
         if not paginas:
             return ''
-        chaves_item = set(_palavras_chave(texto_item))
-        if not chaves_item:
+        evidencia = _trecho_literal_no_pop(texto_item, paginas)
+        pagina = evidencia.get('pagina') or 0
+        return _localizacao_pop(paginas, pagina) if pagina else ''
+
+    def _normalizar_texto_pop(texto: str) -> str:
+        import unicodedata
+        base = unicodedata.normalize('NFD', str(texto or ''))
+        return re.sub(r'[^a-z0-9]+', ' ', base.encode('ascii', 'ignore').decode().lower()).strip()
+
+    def _localizacao_pop(paginas: list, numero_pagina: int) -> str:
+        if not numero_pagina or not paginas:
             return ''
-
-        paginas_chaves = [set(_palavras_chave(p)) for p in paginas]
-        n_paginas = len(paginas_chaves)
-        freq_pagina = {}
-        for chaves_pagina in paginas_chaves:
-            for chave in chaves_pagina:
-                freq_pagina[chave] = freq_pagina.get(chave, 0) + 1
-
-        def idf(chave: str) -> float:
-            return math.log((n_paginas + 1) / (freq_pagina.get(chave, 0) + 1)) + 0.1
-
-        melhor_pagina, melhor_pontuacao = None, 0.0
-        for i, chaves_pagina in enumerate(paginas_chaves, start=1):
-            comuns = chaves_item & chaves_pagina
-            pontuacao = sum(idf(c) for c in comuns)
-            if pontuacao > melhor_pontuacao:
-                melhor_pagina, melhor_pontuacao = i, pontuacao
-        # Limiar mínimo para não sugerir algo baseado só em termos genéricos.
-        if not melhor_pagina or melhor_pontuacao < 1.0:
-            return ''
-        # Cita a seção vigente na página, caindo para a última declarada antes
-        # dela quando a página é continuação de uma seção iniciada atrás.
         secao = ''
-        for i in range(melhor_pagina - 1, -1, -1):
+        for i in range(numero_pagina - 1, -1, -1):
             secao = _secao_da_pagina(paginas[i])
             if secao:
                 break
-        return f'{secao} (p.{melhor_pagina})' if secao else f'p.{melhor_pagina}'
+        return f'{secao} (p.{numero_pagina})' if secao else f'p.{numero_pagina}'
+
+    _TERMOS_GENERICOS_POP = {
+        'a', 'ao', 'aos', 'as', 'com', 'como', 'da', 'das', 'de', 'do', 'dos',
+        'e', 'em', 'entre', 'essa', 'esse', 'esta', 'este', 'foi', 'ha', 'na',
+        'nas', 'no', 'nos', 'num', 'numa', 'o', 'os', 'ou', 'para', 'pela',
+        'pelas', 'pelo', 'pelos', 'por', 'que', 'se', 'sem', 'ser', 'sua',
+        'suas', 'seu', 'seus', 'tem', 'um', 'uma', 'umas', 'uns',
+    }
+
+    def _trecho_literal_no_pop(descricao: str, paginas: list) -> dict:
+        """Retorna somente evidência textual contínua existente no PDF.
+
+        Não há busca fuzzy, similaridade ou aproximação por palavras isoladas.
+        O trecho precisa aparecer na mesma ordem e de forma contínua no texto
+        extraído do POP; caso contrário, o item permanece para revisão manual.
+        """
+        tokens_item = _normalizar_texto_pop(descricao).split()
+        textos_norm = [_normalizar_texto_pop(pagina) for pagina in paginas]
+        textos_com_delimitadores = [f' {texto} ' for texto in textos_norm]
+
+        # Primeiro prioriza a pergunta completa, que é a evidência mais forte.
+        pergunta_norm = ' '.join(tokens_item)
+        if pergunta_norm and len(pergunta_norm) >= 24:
+            for numero, texto in enumerate(textos_com_delimitadores, start=1):
+                if f' {pergunta_norm} ' in texto:
+                    return {
+                        'status': 'Pergunta inteira encontrada no POP',
+                        'confianca': 'Alta', 'pontuacao': 100,
+                        'pagina': numero, 'evidencia': pergunta_norm,
+                    }
+
+        referencias = detectar_pontos_pop(descricao)
+        referencias_encontradas = []
+        for referencia in referencias:
+            ref_norm = _normalizar_texto_pop(referencia)
+            if len(ref_norm.split()) < 2:
+                continue
+            for numero, texto in enumerate(textos_com_delimitadores, start=1):
+                if f' {ref_norm} ' in texto:
+                    referencias_encontradas.append(referencia)
+                    return {
+                        'status': 'Referência exata encontrada no POP',
+                        'confianca': 'Alta', 'pontuacao': 100,
+                        'pagina': numero, 'evidencia': referencia,
+                        'referencias_encontradas': referencias_encontradas,
+                    }
+
+        # Checklist e POP podem usar uma frase operacional idêntica dentro de
+        # perguntas maiores. Isso é aceito apenas como trecho literal contínuo,
+        # com pelo menos 4 palavras e 3 termos substantivos, nunca por palavras
+        # soltas ou por pontuação de similaridade.
+        max_tokens = min(12, len(tokens_item))
+        for tamanho in range(max_tokens, 3, -1):
+            for inicio in range(len(tokens_item) - tamanho + 1):
+                trecho = tokens_item[inicio:inicio + tamanho]
+                substantivos = [
+                    token for token in trecho
+                    if len(token) >= 4 and token not in _TERMOS_GENERICOS_POP
+                    and not token.isdigit()
+                ]
+                if len(substantivos) < 3:
+                    continue
+                trecho_norm = ' '.join(trecho)
+                for numero, texto in enumerate(textos_com_delimitadores, start=1):
+                    if f' {trecho_norm} ' in texto:
+                        return {
+                            'status': 'Trecho literal localizado no POP',
+                            'confianca': 'Revisão manual', 'pontuacao': 75,
+                            'pagina': numero, 'evidencia': trecho_norm,
+                            'referencias_encontradas': referencias_encontradas,
+                        }
+
+        return {
+            'status': 'Sem trecho literal suficiente no POP',
+            'confianca': 'Revisão manual', 'pontuacao': 0,
+            'pagina': 0, 'evidencia': '',
+            'referencias_encontradas': referencias_encontradas,
+        }
+
+    def _referencia_associada_ao_checklist(item: dict) -> str:
+        """Referencia automática segura quando a pergunta é uma paráfrase.
+
+        O texto não é apresentado como uma etapa inventada do POP. A referência
+        deixa explícito que veio do item/bloco do checklist associado ao POP
+        escolhido na importação.
+        """
+        codigo = str(item.get('codigo') or '').strip()
+        bloco = codigo.split('.', 1)[0] if codigo else ''
+        bloco_por_numero = {'1': 'A', '2': 'B', '3': 'C', '4': 'D', '5': 'E'}
+        bloco_letra = bloco_por_numero.get(bloco)
+        if bloco_letra in {'B', 'D'}:
+            return f'Bloco {bloco_letra} — governança e maturidade do checklist'
+        if bloco_letra == 'E':
+            return 'Bloco E — gap identificado no checklist'
+        return f'Item {codigo or "do checklist"} — critério associado ao POP'
+
+    def confrontar_item_com_pop(item: dict, paginas: list) -> dict:
+        """Compara um item do checklist com o texto extraído do POP.
+
+        A correspondência usa somente evidência literal do PDF: pergunta
+        inteira, referência explícita ou trecho contínuo da pergunta. Não há
+        aproximação semântica, palavras soltas ou inferência de página.
+        """
+        descricao = str(item.get('descricao') or '')
+        if not paginas:
+            return {
+                'status': 'POP não verificável', 'confianca': 'Não verificado',
+                'pontuacao': 0, 'referencia': 'Revisão obrigatória: PDF do POP não foi lido.',
+                'pagina': '', 'evidencia': '', 'termos_comuns': [], 'referencias_encontradas': [],
+            }
+
+        evidencia = _trecho_literal_no_pop(descricao, paginas)
+        pagina = evidencia.get('pagina') or 0
+        status = evidencia['status']
+
+        # O checklist é uma avaliação criada manualmente a partir do POP. O
+        # vínculo explícito do documento selecionado é, portanto, a associação
+        # válida para auditar o item; a busca literal abaixo é evidência
+        # complementar, não uma barreira para salvar a auditoria.
+        if status == 'Sem trecho literal suficiente no POP':
+            status = 'POP associado ao checklist'
+            referencia = _referencia_associada_ao_checklist(item)
+            evidencia_textual = ''
+            confianca = 'Vínculo explícito'
+        else:
+            referencia = _localizacao_pop(paginas, pagina) if pagina else 'Revisão manual: nenhum trecho literal localizado.'
+            evidencia_textual = evidencia.get('evidencia', '')
+            confianca = evidencia['confianca']
+
+        return {
+            'status': status,
+            'confianca': confianca,
+            'pontuacao': evidencia['pontuacao'],
+            'referencia': referencia,
+            'pagina': pagina,
+            'evidencia': evidencia_textual,
+            'termos_comuns': [],
+            'referencias_encontradas': evidencia.get('referencias_encontradas', []),
+        }
+
+    def _pops_com_pdf(df_processos: pd.DataFrame) -> list:
+        """Lista POPs cadastrados com vínculo de arquivo/URL para a importação."""
+        if df_processos is None or df_processos.empty:
+            return []
+        resultado = []
+        vistos = set()
+        for _, row in df_processos.iterrows():
+            link = str(row.get('link_documento') or '').strip()
+            nome = str(row.get('processo') or '').strip()
+            codigo = str(row.get('codigo_2') or '').strip()
+            link_utilizavel = bool(re.match(r'^https?://', link, re.IGNORECASE) or os.path.isfile(link))
+            if not link or not nome or not link_utilizavel:
+                continue
+            chave = (str(row.get('id') or ''), codigo, nome, link)
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            resultado.append({
+                'id': row.get('id'), 'codigo': codigo, 'nome': nome,
+                'link': link, 'rotulo': f'{codigo} — {nome}' if codigo else nome,
+            })
+        return resultado
 
     # ══════════════════════════════════════════════════════════════════════
     # AUDITORIA AUTOMÁTICA — preenche a NC inteira por regra, sem digitação
@@ -1134,6 +1317,18 @@ with tabs[3]:
                 return valor
         return None
 
+    def _criticidade_item(item: dict) -> str:
+        """Régua do HTML v2: notas 0–2 alta, nota 3 média."""
+        nivel = item.get('nivel')
+        if nivel is not None:
+            if int(nivel) <= 2:
+                return 'Alta'
+            if int(nivel) <= 3:
+                return 'Média'
+            return 'Baixa'
+        pct = float(item.get('pct') or 0)
+        return 'Alta' if pct <= 40 else ('Média' if pct <= 60 else 'Baixa')
+
     def auditar_item_automaticamente(item: dict, tipo_checklist: str,
                                      data_auditoria, pop_nome: str = '',
                                      pop_link: str = '') -> dict:
@@ -1149,12 +1344,7 @@ with tabs[3]:
         descricao = item.get('descricao') or ''
         codigo = item.get('codigo') or ''
 
-        if pct < 30:
-            criticidade = 'Alta'
-        elif pct < 50:
-            criticidade = 'Média'
-        else:
-            criticidade = 'Baixa'
+        criticidade = _criticidade_item(item)
 
         pontos = detectar_pontos_pop(descricao)
         ponto_pop = ' · '.join(pontos[:3])
@@ -1238,14 +1428,7 @@ with tabs[3]:
     def _aud_csv_faixa(score: float) -> tuple:
         """Classificação e risco na mesma régua usada em todo o dashboard (faixa())."""
         f = faixa(score)
-        risco_por_rot = {
-            'Excelente': 'Mínimo',
-            'Bom': 'Baixo',
-            'Atenção': 'Médio',
-            'Risco': 'Alto',
-            'Crítico': 'Crítico',
-        }
-        return f['rot'], risco_por_rot.get(f['rot'], '')
+        return f['rot'], f['risco']
 
     def _aud_csv_item_info(nc: dict) -> tuple:
         """Extrai código, descrição curta e nota sem perder o texto original."""
@@ -1881,11 +2064,7 @@ with tabs[3]:
                 
                 # ── FUNÇÃO PARA COR DO TEXTO ──
                 def cor_nota(nota):
-                    if nota >= 90: return '#1E7A2A'
-                    elif nota >= 80: return '#5FB65B'
-                    elif nota >= 70: return '#E8B23A'
-                    elif nota >= 60: return '#E67E22'
-                    else: return '#D64545'
+                    return faixa(nota)['hex']
                 
                 # Constrói a tabela HTML
                 html_table = """
@@ -2064,15 +2243,7 @@ with tabs[3]:
         def _aud_faixa_v2(nota: float) -> dict:
             """Régua única do dashboard (mesma de faixa()), com risco e prioridade de atuação."""
             f = faixa(nota)
-            extra_por_rot = {
-                'Excelente': {'risco': 'Mínimo', 'prio': 'Expansão — disseminar o modelo para outras lojas'},
-                'Bom':       {'risco': 'Baixo',  'prio': 'Melhoria contínua — revisão mensal dos gaps'},
-                'Atenção':   {'risco': 'Médio',  'prio': 'Prioritária — plano de ação em 60 dias'},
-                'Risco':     {'risco': 'Alto',   'prio': 'Urgente — plano estrutural em até 30 dias'},
-                'Crítico':   {'risco': 'Crítico','prio': 'Imediata — intervenção emergencial'},
-            }
-            extra = extra_por_rot.get(f['rot'], {'risco': '', 'prio': ''})
-            return {'rot': f['rot'], 'risco': extra['risco'], 'prio': extra['prio'], 'cor': f['hex']}
+            return {'rot': f['rot'], 'risco': f['risco'], 'prio': f['prio'], 'cor': f['hex']}
 
         def _aud_txt(value) -> str:
             if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -2884,19 +3055,12 @@ with tabs[3]:
                 
                 # Função para badge de nota
                 def badge_nota(nota):
-                    if nota >= 90: return f'<span class="badge-status badge-excelente">Excelente</span>'
-                    elif nota >= 80: return f'<span class="badge-status badge-bom">Bom</span>'
-                    elif nota >= 70: return f'<span class="badge-status badge-atencao">Atenção</span>'
-                    elif nota >= 60: return f'<span class="badge-status badge-risco">Risco</span>'
-                    else: return f'<span class="badge-status badge-critico">Crítico</span>'
+                    f = faixa(nota)
+                    return f'<span class="badge-status" style="background:{f["hex"]};color:white">{f["rot"]}</span>'
                 
                 # Função para cor da nota
                 def cor_nota(nota):
-                    if nota >= 90: return '#1E7A2A'
-                    elif nota >= 80: return '#5FB65B'
-                    elif nota >= 70: return '#E8B23A'
-                    elif nota >= 60: return '#E67E22'
-                    else: return '#D64545'
+                    return faixa(nota)['hex']
 
                 
                 # Constrói a tabela HTML
@@ -3216,7 +3380,6 @@ with tabs[3]:
         # ── Função para extrair dados do PDF ──
         def extrair_dados_pdf(conteudo_pdf):
             import re
-            LIMIAR_NAO_CONFORMIDADE = 60.0
             
             dados = {
                 'loja': '', 
@@ -3241,6 +3404,8 @@ with tabs[3]:
                 dados['tipo_detectado'] = 'FRE-AUD-02'
             elif 'RECEBIMENTO' in titulo_pdf:
                 dados['tipo_detectado'] = 'REC-AUD-03'
+            elif 'ATACADO' in titulo_pdf:
+                dados['tipo_detectado'] = 'ATA-AUD-04'
             else:
                 dados['tipo_detectado'] = ''
             
@@ -3294,7 +3459,7 @@ with tabs[3]:
             # reimprimem a pergunta e a nota do item já processado (às vezes mais de
             # uma vez, uma por foto anexada), o que duplicava o item na extração.
             texto = re.sub(
-                r'Fotos\s+das\s+quest[oõ]es\s+do\s+t[oó]pico.*?(?=\d[\.\d]*♦|RESULTADOS|\Z)',
+                r'Fotos\s+das\s+quest[oõ]es\s+do\s+t[oó]pico.*?(?=\d[\.\d]*\s*♦|RESULTADOS|\Z)',
                 '\n', texto, flags=re.IGNORECASE | re.DOTALL
             )
             texto = re.sub(r'\n\s*\d{1,2}\s*\n', '\n', texto)
@@ -3416,11 +3581,6 @@ with tabs[3]:
                 
                 item = {'codigo': codigo, 'descricao': descricao, 'descricao_curta': descricao_curta, 'obtido': obtido, 'possivel': possivel, 'pct': pct, 'nivel': nivel_num, 'nivel_txt': nivel_txt, 'observacao': obs_item}
                 dados['itens'].append(item)
-                
-                if pct < LIMIAR_NAO_CONFORMIDADE:
-                    nivel_str = f" | Nível {nivel_num}: {nivel_txt}" if nivel_num is not None else ""
-                    obs_str = f" | Obs: {obs_item}" if obs_item else ""
-                    dados['criticas'].append(f"{codigo} — {descricao_curta} ({obtido:.2f}/{possivel:.2f} → {pct:.1f}%){nivel_str}{obs_str}")
             
             return dados
         
@@ -3483,6 +3643,8 @@ with tabs[3]:
                         tipo_default = 'FRE-AUD-02'
                     elif 'RECEBIMENTO' in titulo_pdf:
                         tipo_default = 'REC-AUD-03'
+                    elif 'ATACADO' in titulo_pdf:
+                        tipo_default = 'ATA-AUD-04'
                     
                     st.markdown('<span class="label-destaque">Frente</span>', unsafe_allow_html=True)
                     tipos_import_map = {
@@ -3558,158 +3720,238 @@ with tabs[3]:
                 except Exception:
                     df_pops_todos = pd.DataFrame()
 
-                pop_base = pop_base_da_frente(df_pops_todos, tipo)
-
                 st.markdown(
                     '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
                     'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
-                    'POP avaliado por este checklist</div>',
+                    'POP avaliado por este checklist — vínculo obrigatório</div>',
                     unsafe_allow_html=True,
                 )
-                if pop_base is not None:
-                    pop_base_id = pop_base.get('id')
-                    pop_base_nome = str(pop_base.get('processo', '')).strip()
-                    pop_base_cod = str(pop_base.get('codigo_2', '')).strip()
-                    pop_base_link = str(pop_base.get('link_documento', '') or '').strip()
-                    st.success(f"**{pop_base_cod}** — {pop_base_nome}")
+                # O vínculo não pode ser feito com um POP aleatório só porque ele
+                # possui PDF. Cada frente tem um POP-base próprio; sem esse cadastro
+                # (ou sem o PDF dele) a importação permanece bloqueada.
+                pop_base_cadastrado = pop_base_da_frente(df_pops_todos, tipo)
+                pops_importacao = (
+                    _pops_com_pdf(pd.DataFrame([pop_base_cadastrado]))
+                    if pop_base_cadastrado is not None else []
+                )
+                pop_opcoes = {'— selecione o POP com PDF vinculado —': None}
+                pop_por_rotulo = {}
+                for pop in pops_importacao:
+                    rotulo = pop['rotulo']
+                    if rotulo in pop_opcoes:
+                        rotulo = f"{rotulo} · ID {pop['id']}"
+                    pop_opcoes[rotulo] = pop
+                    pop_por_rotulo[rotulo] = pop
+
+                rotulo_sugerido = next(iter(pop_opcoes))
+                if pops_importacao:
+                    rotulo_sugerido = next(iter(pop_por_rotulo))
+                opcoes_pop_lista = list(pop_opcoes)
+                escolha_base = st.selectbox(
+                    "POP de referência", opcoes_pop_lista,
+                    index=opcoes_pop_lista.index(rotulo_sugerido),
+                    key="import_pop_base", label_visibility="collapsed",
+                )
+                pop_escolhido = pop_por_rotulo.get(escolha_base)
+                if pop_escolhido:
+                    pop_base_id = pop_escolhido['id']
+                    pop_base_nome = pop_escolhido['nome']
+                    pop_base_cod = pop_escolhido['codigo']
+                    pop_base_link = pop_escolhido['link']
+                    st.success(f"**{pop_base_cod or 'POP'}** — {pop_base_nome}")
+                    st.caption(
+                        "Este documento será lido página a página e usado para rastrear "
+                        "cada item do checklist. O documento é o POP-base cadastrado para esta frente."
+                    )
+                    pop_preview = drive_preview(pop_base_link)
+                    if pop_preview:
+                        st.link_button("Abrir / visualizar POP vinculado", pop_preview)
                 else:
                     pop_base_id, pop_base_nome, pop_base_cod, pop_base_link = None, '', '', ''
-                    df_frente = listar_processos_por_frente(df_pops_todos, tipo)
-                    base_pool = df_frente if not df_frente.empty else df_pops_todos
-
-                    opcoes = {'— nenhum POP cadastrado para esta frente —': None}
-                    if not base_pool.empty:
-                        for _, row in base_pool.iterrows():
-                            cod = str(row.get('codigo_2', '')).strip()
-                            nome = str(row.get('processo', '')).strip()
-                            if nome:
-                                opcoes[f"{cod} — {nome}" if cod else nome] = row
-
-                    st.caption(
-                        "O POP desta frente ainda não está cadastrado na aba Processos. "
-                        "Escolha o documento correspondente ou deixe sem vínculo."
-                    )
-                    escolha_base = st.selectbox(
-                        "POP de referência", list(opcoes), key="import_pop_base",
-                        label_visibility="collapsed",
-                    )
-                    row_base = opcoes.get(escolha_base)
-                    if row_base is not None:
-                        pop_base_id = row_base.get('id')
-                        pop_base_nome = str(row_base.get('processo', '')).strip()
-                        pop_base_link = str(row_base.get('link_documento', '') or '').strip()
-                        pop_base_cod = str(row_base.get('codigo_2', '')).strip()
-
-                st.markdown(
-                    '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
-                    'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
-                    'Não conformidades apuradas automaticamente</div>'
-                    '<div style="font-size:.8rem;color:#728177;margin:.2rem 0 .6rem;">'
-                    'Itens abaixo de 60% viram não conformidade com criticidade, responsável, '
-                    'prazo e ação corretiva definidos pela régua do checklist — nada precisa ser digitado.</div>',
-                    unsafe_allow_html=True,
-                )
-
-                itens_criticos = [i for i in dados_extraidos['itens'] if i['pct'] < 60.0]
-
-                criticas_estruturadas = []
-                if not itens_criticos:
-                    st.success("Nenhum item abaixo de 60% neste PDF.")
-                else:
-                    for item in itens_criticos:
-                        nc_auto = auditar_item_automaticamente(
-                            item, tipo, data_audit,
-                            pop_nome=pop_base_nome, pop_link=pop_base_link,
+                    if pop_base_cadastrado is not None:
+                        pop_cod_sem_pdf = str(pop_base_cadastrado.get('codigo_2') or '').strip()
+                        pop_nome_sem_pdf = str(pop_base_cadastrado.get('processo') or '').strip()
+                        st.warning(
+                            f"O POP-base desta frente ({pop_cod_sem_pdf} — {pop_nome_sem_pdf}) "
+                            "está cadastrado, mas não possui PDF vinculado e não pode ser auditado."
                         )
-                        nc_auto.update({
-                            'pop_id': pop_base_id,
-                            'pop_nome': pop_base_nome,
-                            'pop_codigo_2': pop_base_cod,
-                            'confianca': 'base' if pop_base_nome else None,
-                        })
-                        criticas_estruturadas.append(nc_auto)
+                    else:
+                        st.error(
+                            "Nenhum POP-base está configurado para esta frente. Cadastre e vincule "
+                            "o documento correspondente antes de importar o checklist."
+                        )
 
-                    df_apuradas = pd.DataFrame([
-                        {
-                            'Item': nc['codigo_item'],
-                            'Bloco': _bloco_do_item(nc['codigo_item']),
-                            'Criticidade': nc['criticidade'],
-                            'Ponto do POP': nc['ponto_pop'] or '—',
-                            'Ação corretiva': nc['acao_corretiva'],
-                        }
-                        for nc in criticas_estruturadas
-                    ])
-                    st.dataframe(df_apuradas, use_container_width=True, hide_index=True)
+                # Nenhuma etapa de auditoria é montada antes de o POP ser
+                # selecionado e lido com sucesso. O checklist pode ser exibido,
+                # mas não gera pontos críticos nem editores de NC sem documento.
+                paginas_pop = _texto_pop_por_pagina(pop_base_link) if pop_base_link else []
+                pop_texto_lido = bool(
+                    paginas_pop and any(str(pagina or '').strip() for pagina in paginas_pop)
+                )
+                analises_pop = []
+                itens_sem_evidencia_textual = []
+                criticas_estruturadas = []
+                limite_nivel_nc = None
 
-                    n_alta = sum(1 for nc in criticas_estruturadas if nc['criticidade'] == 'Alta')
-                    n_sem_ponto = sum(1 for nc in criticas_estruturadas if not nc['ponto_pop'])
-                    resumo = f"{len(criticas_estruturadas)} não conformidade(s) apurada(s) · {n_alta} de criticidade alta"
-                    if n_sem_ponto:
-                        resumo += f" · {n_sem_ponto} sem ponto do POP localizado"
-                    st.caption(resumo)
+                if not pop_base_link:
+                    st.error(
+                        "A importação só pode ser concluída com um POP selecionado e vinculado a um PDF. "
+                        "O checklist foi lido, mas permanece em revisão."
+                    )
+                elif not pop_texto_lido:
+                    st.error(
+                        "O PDF do POP foi selecionado, mas não pôde ser lido. Verifique se o link é público, "
+                        "se aponta para um PDF e tente novamente antes de salvar."
+                    )
+                else:
+                    st.success(
+                        f"POP confrontado: {len(paginas_pop)} página(s) lida(s) · "
+                        f"{len(dados_extraidos['itens'])} item(ns) prontos para auditoria automática."
+                    )
+                    limite_nivel_nc = st.selectbox(
+                        "Gerar não conformidade para itens com nota até",
+                        options=[2, 3, 4],
+                        index=1,
+                        format_func=lambda nivel: str(nivel),
+                        key="import_limite_nc",
+                    )
 
+                    def item_critico_importacao(item):
+                        nivel = item.get('nivel')
+                        # A elegibilidade segue somente a régua explícita do checklist,
+                        # como no HTML v2. Percentual não substitui nota ausente.
+                        return nivel is not None and int(nivel) <= limite_nivel_nc
+
+                    st.markdown(
+                        '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
+                        'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
+                        'Pontos de atenção sinalizados pelo checklist</div>'
+                        '<div style="font-size:.8rem;color:#728177;margin:.2rem 0 .6rem;">'
+                        'Itens até a nota selecionada viram não conformidade preliminar. A criticidade, a evidência do '
+                        'POP, o responsável e o prazo devem ser confirmados pela equipe.</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # ── CONFRONTO ITEM A ITEM COM O TEXTO DO POP ──
+                    for item in dados_extraidos['itens']:
+                        confronto = confrontar_item_com_pop(item, paginas_pop)
+                        item['_confronto_pop'] = confronto
+                        analises_pop.append((item, confronto))
+                    itens_sem_evidencia_textual = [
+                        (item, confronto) for item, confronto in analises_pop
+                        if confronto['status'] == 'POP associado ao checklist'
+                    ]
+
+                    pontos_atencao = [
+                        (item, confronto) for item, confronto in analises_pop
+                        if item_critico_importacao(item)
+                    ]
+                    itens_sem_nota_regua = [
+                        item for item in dados_extraidos['itens']
+                        if item.get('nivel') is None
+                    ]
+                    if itens_sem_nota_regua:
+                        st.info(
+                            f"{len(itens_sem_nota_regua)} item(ns) sem nota explícita da régua do checklist "
+                            "não foram convertidos automaticamente em não conformidade."
+                        )
                     with st.expander(
-                        f"Definir responsável e ajustar não conformidades ({len(criticas_estruturadas)})",
+                        f"Pontos críticos encontrados ({len(pontos_atencao)} item(ns))",
                         expanded=True,
                     ):
                         st.caption(
-                            "Criticidade, prazo e ação corretiva já vêm calculados. O "
-                            "responsável depende da loja — defina quem vai resolver cada item."
+                            f"São exibidos somente os itens com nota até {limite_nivel_nc} no checklist importado."
                         )
-                        rotulos_nc = {
-                            f"[{nc['codigo_item']}] {nc['criticidade']} · {nc['responsavel'] or 'sem responsável'}": i
-                            for i, nc in enumerate(criticas_estruturadas)
-                        }
-                        sel_nc = st.selectbox("Não conformidade", list(rotulos_nc), key="import_nc_ajuste")
-                        idx_nc_aj = rotulos_nc[sel_nc]
-                        nc_aj = criticas_estruturadas[idx_nc_aj]
-                        aj1, aj2 = st.columns(2)
-                        with aj1:
-                            nc_aj['criticidade'] = st.selectbox(
-                                "Criticidade", ['Alta', 'Média', 'Baixa'],
-                                index=['Alta', 'Média', 'Baixa'].index(nc_aj['criticidade']),
-                                key=f"import_aj_crit_{idx_nc_aj}",
+                        if pontos_atencao:
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    'Item': item.get('codigo', '—'),
+                                    'Nota': item.get('nivel', '—'),
+                                    'Nota %': round(float(item.get('pct') or 0), 1),
+                                    'Criticidade': _criticidade_item(item),
+                                    'Ponto crítico': item.get('descricao_curta') or item.get('descricao', '—'),
+                                    'Referência POP': confronto['referencia'],
+                                } for item, confronto in pontos_atencao]),
+                                use_container_width=True, hide_index=True,
                             )
-                            nc_aj['responsavel'] = st.text_input(
-                                "Responsável", value=nc_aj['responsavel'],
-                                key=f"import_aj_resp_{idx_nc_aj}",
-                            )
-                        with aj2:
-                            nc_aj['ponto_pop'] = st.text_input(
-                                "Ponto do POP divergente", value=nc_aj['ponto_pop'],
-                                placeholder="Etapa, passo, seção, anexo ou página",
-                                key=f"import_aj_ponto_{idx_nc_aj}",
-                            )
-                            prazo_aj = st.date_input(
-                                "Prazo",
-                                value=datetime.strptime(nc_aj['prazo'], '%Y-%m-%d') if nc_aj['prazo'] else None,
-                                format="DD/MM/YYYY", key=f"import_aj_prazo_{idx_nc_aj}",
-                            )
-                            nc_aj['prazo'] = prazo_aj.strftime('%Y-%m-%d') if prazo_aj else ''
-                        nc_aj['acao_corretiva'] = st.text_area(
-                            "Ação corretiva", value=nc_aj['acao_corretiva'], height=70,
-                            key=f"import_aj_acao_{idx_nc_aj}",
-                        )
+                        else:
+                            st.success("Nenhum ponto crítico encontrado.")
 
-                    if not pop_base_nome:
-                        st.warning(
-                            f"{len(criticas_estruturadas)} não conformidade(s) sem POP vinculado. Dá para "
-                            "salvar assim, mas o rastreio ao processo fica pendente."
-                        )
+                    itens_criticos = [i for i in dados_extraidos['itens'] if item_critico_importacao(i)]
 
-                with st.expander("Editar texto bruto das críticas (avançado)", expanded=False):
-                    st.caption(
-                        "Se preencher aqui, este texto substitui os itens vinculados acima "
-                        "e a auditoria é salva sem vínculo ao POP."
-                    )
-                    criticas_input = st.text_area(
-                        "Texto bruto das críticas",
-                        value="",
-                        key="import_criticas_bruto",
-                        placeholder="Uma por linha. Ex: 5.3 — Ausência de mofo, infiltrações ou pragas? (0,16/0,79 → 20.3%)",
-                        height=200,
-                        label_visibility="collapsed",
-                    )
+                    if not itens_criticos:
+                        st.success(f"Nenhum item com nota até {limite_nivel_nc} neste PDF.")
+                    else:
+                        for item in itens_criticos:
+                            nc_auto = auditar_item_automaticamente(
+                                item, tipo, data_audit,
+                                pop_nome=pop_base_nome, pop_link=pop_base_link,
+                            )
+                            confronto = item.get('_confronto_pop') or {}
+                            if confronto:
+                                nc_auto['ponto_pop'] = confronto.get('referencia') or nc_auto.get('ponto_pop', '')
+                                nc_auto['confianca'] = confronto.get('confianca')
+                                nc_auto['pop_status'] = confronto.get('status')
+                                nc_auto['pop_match_score'] = confronto.get('pontuacao', 0)
+                                nc_auto['pop_pagina'] = confronto.get('pagina', '')
+                                nc_auto['pop_termos_comuns'] = confronto.get('termos_comuns', [])
+                            nc_auto.update({
+                                'pop_id': pop_base_id,
+                                'pop_nome': pop_base_nome,
+                                'pop_codigo_2': pop_base_cod,
+                                'pop_link': pop_base_link,
+                            })
+                            criticas_estruturadas.append(nc_auto)
+
+                        n_alta = sum(1 for nc in criticas_estruturadas if nc['criticidade'] == 'Alta')
+                        n_sem_ponto = sum(1 for nc in criticas_estruturadas if not nc['ponto_pop'])
+                        resumo = f"{len(criticas_estruturadas)} não conformidade(s) apurada(s) · {n_alta} de criticidade alta"
+                        if n_sem_ponto:
+                            resumo += f" · {n_sem_ponto} sem ponto do POP localizado"
+                        st.caption(resumo)
+
+                        with st.expander(
+                            f"Definir responsável e ajustar não conformidades ({len(criticas_estruturadas)})",
+                            expanded=True,
+                        ):
+                            st.caption(
+                                "Criticidade, prazo e ação corretiva já vêm calculados. O "
+                                "responsável depende da loja — defina quem vai resolver cada item."
+                            )
+                            rotulos_nc = {
+                                f"[{nc['codigo_item']}] {nc['criticidade']} · {nc['responsavel'] or 'sem responsável'}": i
+                                for i, nc in enumerate(criticas_estruturadas)
+                            }
+                            sel_nc = st.selectbox("Não conformidade", list(rotulos_nc), key="import_nc_ajuste")
+                            idx_nc_aj = rotulos_nc[sel_nc]
+                            nc_aj = criticas_estruturadas[idx_nc_aj]
+                            aj1, aj2 = st.columns(2)
+                            with aj1:
+                                nc_aj['criticidade'] = st.selectbox(
+                                    "Criticidade", ['Alta', 'Média', 'Baixa'],
+                                    index=['Alta', 'Média', 'Baixa'].index(nc_aj['criticidade']),
+                                    key=f"import_aj_crit_{idx_nc_aj}",
+                                )
+                                nc_aj['responsavel'] = st.text_input(
+                                    "Responsável", value=nc_aj['responsavel'],
+                                    key=f"import_aj_resp_{idx_nc_aj}",
+                                )
+                            with aj2:
+                                nc_aj['ponto_pop'] = st.text_input(
+                                    "Ponto do POP divergente", value=nc_aj['ponto_pop'],
+                                    placeholder="Etapa, passo, seção, anexo ou página",
+                                    key=f"import_aj_ponto_{idx_nc_aj}",
+                                )
+                                prazo_aj = st.date_input(
+                                    "Prazo",
+                                    value=datetime.strptime(nc_aj['prazo'], '%Y-%m-%d') if nc_aj['prazo'] else None,
+                                    format="DD/MM/YYYY", key=f"import_aj_prazo_{idx_nc_aj}",
+                                )
+                                nc_aj['prazo'] = prazo_aj.strftime('%Y-%m-%d') if prazo_aj else ''
+                            nc_aj['acao_corretiva'] = st.text_area(
+                                "Ação corretiva", value=nc_aj['acao_corretiva'], height=70,
+                                key=f"import_aj_acao_{idx_nc_aj}",
+                            )
 
                 st.markdown("---")
                 
@@ -3758,28 +4000,47 @@ with tabs[3]:
                 if st.button(
                     "Substituir auditoria existente" if existente_pdf else "Salvar auditoria",
                     use_container_width=True, type="primary", key="btn_salvar_pdf",
+                    disabled=not (pop_base_id and pop_base_link and pop_texto_lido),
                 ):
                     if not loja or not tipo or not data_audit:
                         st.error("Preencha todos os campos obrigatórios.")
                     elif any(p < 0 or p > 100 for p in pcts):
                         st.error("As notas devem estar entre 0 e 100.")
+                    elif not pop_base_id or not pop_base_link or not pop_texto_lido:
+                        st.error(
+                            "Não é possível salvar: selecione um POP com PDF acessível e aguarde o "
+                            "confronto item a item terminar."
+                        )
+                    elif not dados_extraidos['itens']:
+                        st.error("Não é possível salvar: nenhum ponto do checklist foi lido no PDF.")
                     else:
                         cod_loja = loja.split(' - ')[0]
-                        # Texto bruto (expander avançado) tem prioridade quando preenchido;
-                        # caso contrário salva os itens já vinculados ao POP.
-                        if criticas_input.strip():
-                            criticas_list = [
-                                {**normalizar_critica(c.strip())}
-                                for c in criticas_input.split('\n') if c.strip()
-                            ]
-                        else:
-                            criticas_list = criticas_estruturadas
+                        # Salva exclusivamente as NCs elegíveis pela régua da nota
+                        # selecionada; não há entrada textual livre que possa criar
+                        # divergência entre a importação e as demais subabas.
+                        criticas_list = criticas_estruturadas
+                        topicos_importados = [
+                            {
+                                'nome': CHECKLISTS[tipo]['slots'][i],
+                                'possivel': POSSIVEL[i],
+                                'pct': pcts[i],
+                                'pop_id': pop_base_id,
+                                'pop_codigo_2': pop_base_cod,
+                                'pop_nome': pop_base_nome,
+                                'pop_link': pop_base_link,
+                                'pop_paginas_lidas': len(paginas_pop),
+                                'pop_limite_nivel_nc': limite_nivel_nc,
+                                'pop_itens_com_evidencia': len(analises_pop) - len(itens_sem_evidencia_textual),
+                                'pop_itens_sem_evidencia_textual': len(itens_sem_evidencia_textual),
+                            }
+                            for i in range(5)
+                        ]
                         dados_para_salvar = {
                             'loja': cod_loja,
                             'data': data_audit.strftime('%Y-%m-%d'),
                             'tipo': tipo,
                             'avaliador': avaliador,
-                            'topicos': [{'nome': CHECKLISTS[tipo]['slots'][i], 'possivel': POSSIVEL[i], 'pct': pcts[i]} for i in range(5)],
+                            'topicos': topicos_importados,
                             'total': total_nota,
                             'criticas': criticas_list
                         }
@@ -3854,7 +4115,7 @@ with tabs[3]:
 
         st.markdown(cab_html(
             "Lançar auditoria manual",
-            "Registre manualmente os dados da auditoria sem necessidade de PDF.",
+            "Registre manualmente as notas e as tratativas; o POP-base da frente continua obrigatório e precisa ser legível.",
             "＋",
         ), unsafe_allow_html=True)
 
@@ -3922,37 +4183,38 @@ with tabs[3]:
             'POP avaliado por este checklist</div>',
             unsafe_allow_html=True,
         )
+        pop_m_id, pop_m_nome, pop_m_cod, pop_m_link = None, '', '', ''
+        paginas_pop_manual = []
+        pop_texto_lido_manual = False
         if pop_base_m is not None:
             pop_m_id = pop_base_m.get('id')
             pop_m_nome = str(pop_base_m.get('processo', '')).strip()
             pop_m_cod = str(pop_base_m.get('codigo_2', '')).strip()
+            pop_m_link = str(pop_base_m.get('link_documento') or '').strip()
             st.success(f"**{pop_m_cod}** — {pop_m_nome}")
+            if not pop_m_link:
+                st.error(
+                    "O POP-base desta frente está cadastrado, mas não possui PDF vinculado. "
+                    "A auditoria manual está bloqueada até o documento ser anexado."
+                )
+            else:
+                paginas_pop_manual = _texto_pop_por_pagina(pop_m_link)
+                pop_texto_lido_manual = bool(
+                    paginas_pop_manual and any(str(pagina or '').strip() for pagina in paginas_pop_manual)
+                )
+                if pop_texto_lido_manual:
+                    st.success(
+                        f"POP validado antes do lançamento: {len(paginas_pop_manual)} página(s) lida(s)."
+                    )
+                else:
+                    st.error(
+                        "O PDF do POP-base não pôde ser lido. A auditoria manual permanece bloqueada."
+                    )
         else:
-            pop_m_id, pop_m_nome, pop_m_cod = None, '', ''
-            df_frente_m = listar_processos_por_frente(df_pops_manual, tipo)
-            pool_m = df_frente_m if not df_frente_m.empty else df_pops_manual
-
-            opcoes_m = {'— nenhum POP cadastrado para esta frente —': None}
-            if not pool_m.empty:
-                for _, row in pool_m.iterrows():
-                    cod = str(row.get('codigo_2', '')).strip()
-                    nome = str(row.get('processo', '')).strip()
-                    if nome:
-                        opcoes_m[f"{cod} — {nome}" if cod else nome] = row
-
-            st.caption(
-                "O POP desta frente ainda não está cadastrado na aba Processos. "
-                "Escolha o documento correspondente ou deixe sem vínculo."
+            st.error(
+                "Nenhum POP-base está configurado para esta frente. "
+                "A auditoria manual está bloqueada até o documento correto ser cadastrado e vinculado."
             )
-            escolha_m = st.selectbox(
-                "POP de referência", list(opcoes_m), key="manual_pop_base",
-                label_visibility="collapsed",
-            )
-            row_m = opcoes_m.get(escolha_m)
-            if row_m is not None:
-                pop_m_id = row_m.get('id')
-                pop_m_nome = str(row_m.get('processo', '')).strip()
-                pop_m_cod = str(row_m.get('codigo_2', '')).strip()
 
         st.markdown(
             '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
@@ -3966,16 +4228,12 @@ with tabs[3]:
         if "manual_ncs" not in st.session_state:
             st.session_state.manual_ncs = []
 
-        # ── POOL de POPs para o select de cada card (mesmo filtro por frente já usado acima) ──
-        df_frente_ncs = listar_processos_por_frente(df_pops_manual, tipo)
-        pool_ncs = df_frente_ncs if not df_frente_ncs.empty else df_pops_manual
-        opcoes_pop_ncs = {'— herdar POP do checklist acima —': 'HERDAR', '— sem vínculo —': None}
-        if not pool_ncs.empty:
-            for _, row in pool_ncs.iterrows():
-                cod = str(row.get('codigo_2', '')).strip()
-                nome = str(row.get('processo', '')).strip()
-                if nome:
-                    opcoes_pop_ncs[f"{cod} — {nome}" if cod else nome] = row
+        # Cada NC herda o POP-base validado acima. Não oferecer POPs de outras
+        # frentes nem a opção sem vínculo, que criaria inconsistência no histórico.
+        opcoes_pop_ncs = {
+            '— herdar POP do checklist acima —': 'HERDAR'
+            if pop_texto_lido_manual else None
+        }
 
         for idx, nc_card in enumerate(st.session_state.manual_ncs):
             with st.container(border=True):
@@ -4087,6 +4345,7 @@ with tabs[3]:
         if st.button(
             "Substituir Auditoria Existente" if existente_manual else "Salvar Auditoria",
             use_container_width=True, type="primary", key="btn_salvar_manual",
+            disabled=not (pop_m_id and pop_m_link and pop_texto_lido_manual),
         ):
             # VALIDA E SALVA DIRETO
             try:
@@ -4100,6 +4359,11 @@ with tabs[3]:
                 st.stop()
             elif any(p < 0 or p > 100 for p in pcts):
                 st.error("As notas devem estar entre 0 e 100.")
+                st.stop()
+            elif not pop_m_id or not pop_m_link or not pop_texto_lido_manual:
+                st.error(
+                    "Não é possível salvar: valide o POP-base correto da frente e aguarde a leitura do PDF."
+                )
                 st.stop()
             else:
                 cod_loja = loja.split(' - ')[0]
@@ -4115,7 +4379,12 @@ with tabs[3]:
                     'tipo': tipo,
                     'avaliador': avaliador,
                     'topicos': [
-                        {'nome': CHECKLISTS[tipo]['slots'][i], 'possivel': POSSIVEL[i], 'pct': pcts[i]}
+                        {
+                            'nome': CHECKLISTS[tipo]['slots'][i], 'possivel': POSSIVEL[i], 'pct': pcts[i],
+                            'pop_id': pop_m_id, 'pop_codigo_2': pop_m_cod,
+                            'pop_nome': pop_m_nome, 'pop_link': pop_m_link,
+                            'pop_paginas_lidas': len(paginas_pop_manual),
+                        }
                         for i in range(5)
                     ],
                     'total': total_nota,
@@ -4285,11 +4554,12 @@ with tabs[3]:
                      unsafe_allow_html=True)
 
         faixas_regua = [
-            (90, 100, 'Excelente', '#1E7A2A', 'Mínimo', 'Expansão — disseminar o modelo para outras lojas'),
-            (80, 89,  'Bom',       '#5FB65B', 'Baixo',  'Melhoria contínua — revisão mensal dos gaps'),
-            (70, 79,  'Atenção',   '#E8B23A', 'Médio',  'Prioritária — plano de ação em 60 dias'),
-            (60, 69,  'Risco',     '#E67E22', 'Alto',   'Urgente — plano estrutural em até 30 dias'),
-            (0,  59,  'Crítico',   '#D64545', 'Crítico','Imediata — intervenção emergencial'),
+            (
+                item['min'],
+                100 if indice == 0 else FAIXAS_AUDITORIA[indice - 1]['min'] - 1,
+                item['rot'], item['hex'], item['risco'], item['prio'],
+            )
+            for indice, item in reversed(list(enumerate(FAIXAS_AUDITORIA)))
         ]
         linhas_regua = "".join(f"""
             <tr>
