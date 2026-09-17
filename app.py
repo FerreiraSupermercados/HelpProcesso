@@ -4,6 +4,10 @@ Banco: Supabase | PDFs: Google Drive (público via link)
 """
 import pdfplumber
 import re
+import io
+import math
+import requests
+from datetime import timedelta
 import streamlit as st
 import pandas as pd
 import base64, os
@@ -669,6 +673,13 @@ with tabs[3]:
       --sombra:0 1px 2px rgba(18,51,28,.06),0 4px 16px rgba(18,51,28,.05);
       --disp:'Barlow Semi Condensed',system-ui,sans-serif;--corpo:'Inter',system-ui,sans-serif;
     }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --verde:#4FBF58;--verde-esc:#6FD277;--verde-tinta:#DCEFDD;
+        --papel:#131A14;--branco:#1B241C;--borda:#2E3B2F;--texto:#E3EDE4;--suave:#93A594;
+        --sombra:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.28);
+      }
+    }
     .aud-card{background:var(--branco);border:1px solid var(--borda);border-radius:12px;padding:18px;box-shadow:var(--sombra);margin-bottom:14px}
     .aud-card h3{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--verde-tinta);letter-spacing:.3px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
     .aud-kpi .rot{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--suave);font-weight:600}
@@ -874,7 +885,21 @@ with tabs[3]:
         if nota >= 70: return {'rot': 'Atenção', 'cor': '#E8B23A', 'hex': '#E8B23A'}
         if nota >= 60: return {'rot': 'Risco', 'cor': '#E67E22', 'hex': '#E67E22'}
         return {'rot': 'Crítico', 'cor': '#D64545', 'hex': '#D64545'}
-    
+
+    def legenda_faixa_html() -> str:
+        """Legenda da régua de classificação (mesmos cortes de faixa()), para repetir em toda aba que exiba a cor/rótulo de uma nota."""
+        faixas_ref = [(95, '≥ 90'), (85, '80-89'), (75, '70-79'), (65, '60-69'), (30, '< 60')]
+        html = '<div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.85rem;color:#728177;margin-top:16px;padding-top:12px;border-top:1px solid #EEF3EE;">'
+        for amostra, faixa_txt in faixas_ref:
+            fx = faixa(amostra)
+            html += (
+                '<span style="display:flex;align-items:center;gap:6px;">'
+                f'<span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:{fx["cor"]};"></span>'
+                f'{fx["rot"]} ({faixa_txt})</span>'
+            )
+        html += '</div>'
+        return html
+
     def nivel_maturidade(nota):
         if nota >= 90: return 5
         if nota >= 80: return 4
@@ -913,6 +938,248 @@ with tabs[3]:
                     vistos.add(chave)
                     achados.append(trecho)
         return achados
+
+    # ── BUSCA POR PALAVRAS-CHAVE NO CONTEÚDO REAL DO POP ──
+    # Quando o item do checklist não cita um ponto explícito (ANEXO/Seção/p.X),
+    # tenta achar a página do POP-base com mais vocabulário em comum com o item.
+    # Não é correlação semântica (IA) — é sobreposição de palavras significativas,
+    # suficiente para itens que reusam os termos do próprio POP.
+    STOPWORDS_POP = {
+        'a','ao','aos','as','com','como','da','das','de','dela','delas','dele',
+        'deles','do','dos','e','em','entre','essa','essas','esse','esses','esta',
+        'estao','estão','estas','este','estes','existe','existem','foi','há','na',
+        'nas','no','nos','num','numa','o','os','ou','para','pela','pelas','pelo',
+        'pelos','por','qual','quais','que','sao','são','se','sem','ser','seu',
+        'seus','sua','suas','tem','tém','têm','um','uma','umas','uns',
+    }
+
+    def _palavras_chave(texto: str) -> list:
+        palavras = re.findall(r'[a-zà-úA-ZÀ-Ú]{4,}', texto or '')
+        vistas, resultado = set(), []
+        for p in palavras:
+            chave = p.lower()
+            if chave in STOPWORDS_POP or chave in vistas:
+                continue
+            vistas.add(chave)
+            resultado.append(chave)
+        return resultado
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _texto_pop_por_pagina(link_documento: str) -> list:
+        """Baixa o PDF do POP (link público do Drive) e devolve o texto de cada página."""
+        if not link_documento:
+            return []
+        file_id = None
+        m = re.search(r'/file/d/([a-zA-Z0-9_-]+)', link_documento) or re.search(r'[?&]id=([a-zA-Z0-9_-]+)', link_documento)
+        if m:
+            file_id = m.group(1)
+        if not file_id:
+            return []
+        try:
+            resp = requests.get(
+                f'https://drive.google.com/uc?export=download&id={file_id}', timeout=20,
+            )
+            resp.raise_for_status()
+            paginas = []
+            with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
+                for page in pdf.pages:
+                    paginas.append(page.extract_text() or '')
+            return paginas
+        except Exception:
+            return []
+
+    # Títulos de seção dos POPs vêm em numeração romana e caixa alta
+    # ("IV. PROCEDIMENTO", "VII. TABELA DE REFERÊNCIA"), o que permite citar o
+    # ponto do POP como o auditor cita: seção + página, não só a página.
+    PADRAO_SECAO_POP = re.compile(r'\b([IVXLC]{1,5})\.\s+([A-ZÀ-Ú][A-ZÀ-Ú\s/,\-()]{4,55})')
+
+    # Seções que descrevem o documento, não a regra a cumprir: citar uma delas
+    # como ponto divergente não ajuda o gestor a corrigir nada.
+    SECOES_POP_IGNORADAS = ('dicion', 'objetivo', 'controle de altera', 'perguntas frequentes', 'faq')
+
+    def _secao_da_pagina(texto_pagina: str) -> str:
+        """Último título de seção normativa declarado na página ('IV. PROCEDIMENTO')."""
+        for romano, titulo in reversed(PADRAO_SECAO_POP.findall(texto_pagina or '')):
+            titulo = re.sub(r'\s+', ' ', titulo).strip()
+            # O título vem grudado no começo da tabela seguinte; corta no
+            # primeiro rótulo de coluna para não arrastar o cabeçalho inteiro.
+            titulo = re.split(r'\s+(?:TIPO|TERMO|ATEN[ÇC][ÃA]O|SITUA[ÇC]|P$)', titulo)[0].strip()
+            palavras = titulo.split()
+            if len(palavras) > 6:
+                titulo = ' '.join(palavras[:6])
+            if not titulo:
+                continue
+            if any(t in titulo.lower() for t in SECOES_POP_IGNORADAS):
+                continue
+            return f'Seção {romano}. {titulo}'
+        return ''
+
+    def sugerir_ponto_pop_por_contexto(texto_item: str, link_documento: str) -> str:
+        """Seção/página do POP com mais palavras-chave relevantes em comum com o item.
+
+        Pondera cada palavra pelo inverso da frequência entre as páginas (IDF
+        simples), para que termos genéricos que aparecem em quase todo o
+        documento (ex.: o próprio nome do processo, repetido no cabeçalho de
+        cada página) não dominem o resultado sobre termos mais discriminativos.
+        Devolve '' se não houver nenhuma página com sinal relevante.
+        """
+        paginas = _texto_pop_por_pagina(link_documento)
+        if not paginas:
+            return ''
+        chaves_item = set(_palavras_chave(texto_item))
+        if not chaves_item:
+            return ''
+
+        paginas_chaves = [set(_palavras_chave(p)) for p in paginas]
+        n_paginas = len(paginas_chaves)
+        freq_pagina = {}
+        for chaves_pagina in paginas_chaves:
+            for chave in chaves_pagina:
+                freq_pagina[chave] = freq_pagina.get(chave, 0) + 1
+
+        def idf(chave: str) -> float:
+            return math.log((n_paginas + 1) / (freq_pagina.get(chave, 0) + 1)) + 0.1
+
+        melhor_pagina, melhor_pontuacao = None, 0.0
+        for i, chaves_pagina in enumerate(paginas_chaves, start=1):
+            comuns = chaves_item & chaves_pagina
+            pontuacao = sum(idf(c) for c in comuns)
+            if pontuacao > melhor_pontuacao:
+                melhor_pagina, melhor_pontuacao = i, pontuacao
+        # Limiar mínimo para não sugerir algo baseado só em termos genéricos.
+        if not melhor_pagina or melhor_pontuacao < 1.0:
+            return ''
+        # Cita a seção vigente na página, caindo para a última declarada antes
+        # dela quando a página é continuação de uma seção iniciada atrás.
+        secao = ''
+        for i in range(melhor_pagina - 1, -1, -1):
+            secao = _secao_da_pagina(paginas[i])
+            if secao:
+                break
+        return f'{secao} (p.{melhor_pagina})' if secao else f'p.{melhor_pagina}'
+
+    # ══════════════════════════════════════════════════════════════════════
+    # AUDITORIA AUTOMÁTICA — preenche a NC inteira por regra, sem digitação
+    # ══════════════════════════════════════════════════════════════════════
+    # Responsável NÃO é derivado por regra: quem resolve cada NC depende da
+    # loja específica e de quem trabalha nela (definido pelo assistente de
+    # processos que preenche o checklist), não do bloco ou do tema do item.
+    # O mesmo vale para o prazo. Ambos ficam em branco para preenchimento
+    # manual na conferência.
+
+    # Ação corretiva por tipo de achado. A primeira entrada cujo termo aparecer
+    # no enunciado define a ação, então a ordem importa: o que identifica o
+    # objeto da exigência ("POP afixado", "quadro de metas") vem antes do que
+    # identifica só o cenário ("câmara", "piso"), senão uma frase sobre afixar
+    # POPs na câmara viraria manutenção de equipamento.
+    ACOES_POR_TEMA = [
+        (('pop', 'anexo', 'procediment', 'plastificad'),
+         'Imprimir, plastificar e afixar os POPs e anexos vigentes nos pontos de uso.'),
+        (('quadro', 'painel', 'painéi', 'painei', 'gestão à vista', 'gestao a vista', 'metas'),
+         'Instalar e manter o quadro de gestão à vista com metas, resultados e anexos do processo.'),
+        (('trein', 'recicla', 'capacita', 'integra'),
+         'Programar o treinamento/reciclagem com registro de participação e avaliação de eficácia.'),
+        (('plano de ação', 'plano de acao', 'tratativa', 'causa raiz', '5 porqu'),
+         'Elaborar plano de ação formal com responsável, prazo e status por desvio.'),
+        (('indicador', 'kpi', 'monitorad', 'percentual de', '% de'),
+         'Definir o indicador, publicar a apuração mensal e acompanhar em reunião de resultados.'),
+        (('reuni', 'alinhamento', 'pauta'),
+         'Instituir a reunião com periodicidade definida, pauta registrada e lista de presença.'),
+        (('conferência cega', 'conferencia cega', 'bipagem', 'coletor', 'canhoto',
+          'nota fiscal', 'nf-e', 'pré-conferência', 'pre-conferencia'),
+         'Cumprir a rotina do POP na conferência e bloquear o avanço sem a etapa concluída.'),
+        (('cancelament', 'devoluç', 'devoluc', 'divergênc', 'divergenc', 'avaria',
+          'quebra', 'perda', 'invent'),
+         'Apurar as ocorrências por responsável, analisar a causa e tratar os desvios recorrentes.'),
+        (('epi', 'higieniz', 'lavat', 'sabonete', 'álcool', 'alcool', 'fardament', 'uniform'),
+         'Repor os itens de higiene/EPI e incluir a verificação na rotina diária do setor.'),
+        (('praga', 'mofo', 'infiltra', 'dedetiza'),
+         'Acionar dedetização/manutenção corretiva e vedar os pontos de entrada identificados.'),
+        (('temperatura', 'refrigera', 'frigorif', 'aferid', 'termômetr', 'termometr'),
+         'Corrigir o equipamento, registrar a temperatura por turno e tratar desvios na hora.'),
+        (('ralo', 'drenagem', 'sifão', 'sifao', 'piso', 'parede', 'teto', 'bancada',
+          'ferrugem', 'inox', 'ilha', 'câmara', 'camara', 'conservad', 'danific'),
+         'Abrir ordem de manutenção para recuperar a estrutura e incluir no plano preventivo.'),
+        (('afixad', 'afixar', 'impress', 'visívei', 'visivei', 'mural', 'cartaz', 'catálogo', 'catalogo'),
+         'Imprimir e afixar o material exigido em todos os pontos de uso.'),
+        ((), 'Regularizar o item conforme o POP de referência e registrar a evidência da correção.'),
+    ]
+
+    # Impacto operacional inferido pelo tema do item (vocabulário do HTML v2).
+    IMPACTOS_POR_TEMA = [
+        (('praga', 'mofo', 'infiltra', 'epi', 'higieniza', 'temperatura', 'validade',
+          'contamina', 'refrigera'), ['Segurança', 'Operacional']),
+        (('custo', 'divergência de custo', 'divergencia de custo', 'financeir', 'kpi',
+          'indicador', 'perda', 'avaria', 'cancelament', 'invent'), ['Financeiro', 'Operacional']),
+        (('atendiment', 'cliente', 'fila', 'caixa'), ['Operacional', 'Cliente']),
+        ((), ['Operacional']),
+    ]
+
+    def _bloco_do_item(codigo_item: str) -> str:
+        """Letra do bloco a partir do código do item ('2.4' -> 'B')."""
+        prefixo = str(codigo_item or '').split('.', 1)[0]
+        if prefixo.isdigit():
+            idx = int(prefixo) - 1
+            if 0 <= idx < len(LETRAS_BLOCO):
+                return LETRAS_BLOCO[idx]
+        return ''
+
+    def _casar_tema(texto: str, tabela):
+        """Primeiro valor da tabela cujo termo aparece no texto (última entrada = padrão)."""
+        alvo = (texto or '').lower()
+        for termos, valor in tabela:
+            if not termos:
+                return valor
+            if any(t in alvo for t in termos):
+                return valor
+        return None
+
+    def auditar_item_automaticamente(item: dict, tipo_checklist: str,
+                                     data_auditoria, pop_nome: str = '',
+                                     pop_link: str = '') -> dict:
+        """Monta a não conformidade completa de um item reprovado, sem digitação.
+
+        Deriva criticidade da nota, ação corretiva e impacto do tema do
+        enunciado, e o ponto do POP do próprio texto do item (ou do conteúdo
+        do POP, por contexto). Responsável e prazo não são atribuídos por
+        regra — dependem da loja e de quem trabalha nela, então ficam em
+        branco para quem está revisando a auditoria preencher.
+        """
+        pct = float(item.get('pct') or 0)
+        descricao = item.get('descricao') or ''
+        codigo = item.get('codigo') or ''
+
+        if pct < 30:
+            criticidade = 'Alta'
+        elif pct < 50:
+            criticidade = 'Média'
+        else:
+            criticidade = 'Baixa'
+
+        pontos = detectar_pontos_pop(descricao)
+        ponto_pop = ' · '.join(pontos[:3])
+        if not ponto_pop and pop_link:
+            ponto_pop = sugerir_ponto_pop_por_contexto(descricao, pop_link)
+
+        nivel_str = f" | Nível {item['nivel']}: {item['nivel_txt']}" if item.get('nivel') is not None else ''
+        obs_str = f" | Obs: {item['observacao']}" if item.get('observacao') else ''
+
+        return {
+            'texto': (
+                f"{codigo} — {item.get('descricao_curta', descricao)} "
+                f"({item.get('obtido', 0):.2f}/{item.get('possivel', 0):.2f} → {pct:.1f}%)"
+                f"{nivel_str}{obs_str}"
+            ),
+            'codigo_item': codigo,
+            'ponto_pop': ponto_pop,
+            'status': 'Aberta',
+            'criticidade': criticidade,
+            'responsavel': '',
+            'prazo': '',
+            'acao_corretiva': _casar_tema(descricao, ACOES_POR_TEMA),
+            'evidencia': item.get('observacao') or 'Constatado durante a auditoria de maturidade operacional.',
+            'impacto_operacional': _casar_tema(descricao, IMPACTOS_POR_TEMA),
+        }
 
     # ── DADOS REAIS DO SUPABASE ──
     @st.cache_data(ttl=5, show_spinner=False)  # <-- TTL de 5 segundos
@@ -969,17 +1236,16 @@ with tabs[3]:
             return ''
 
     def _aud_csv_faixa(score: float) -> tuple:
-        if score >= 90:
-            return 'Referência', 'Mínimo'
-        if score >= 76:
-            return 'Avançado', 'Mínimo'
-        if score >= 61:
-            return 'Adequado', 'Baixo'
-        if score >= 41:
-            return 'Em Desenvolvimento', 'Médio'
-        if score >= 21:
-            return 'Insuficiente', 'Alto'
-        return 'Crítico', 'Crítico'
+        """Classificação e risco na mesma régua usada em todo o dashboard (faixa())."""
+        f = faixa(score)
+        risco_por_rot = {
+            'Excelente': 'Mínimo',
+            'Bom': 'Baixo',
+            'Atenção': 'Médio',
+            'Risco': 'Alto',
+            'Crítico': 'Crítico',
+        }
+        return f['rot'], risco_por_rot.get(f['rot'], '')
 
     def _aud_csv_item_info(nc: dict) -> tuple:
         """Extrai código, descrição curta e nota sem perder o texto original."""
@@ -1227,13 +1493,22 @@ with tabs[3]:
             ncs_sem_pop = [n for n in ncs_abertas if not (n.get('pop_nome') or '').strip()]
 
             if ncs_sem_pop:
+                origem_sem_pop = {}
+                for n in ncs_sem_pop:
+                    chave = (n.get('_loja') or '?', n.get('_tipo') or '?')
+                    origem_sem_pop[chave] = origem_sem_pop.get(chave, 0) + 1
+                detalhe_origem = ' · '.join(
+                    f"{loja} {CHECKLISTS.get(tipo, {}).get('nome', tipo)} ({qtd})"
+                    for (loja, tipo), qtd in sorted(origem_sem_pop.items(), key=lambda x: -x[1])
+                )
                 st.markdown(f"""
                 <div style="background:#fdeeee;border:1px solid #eebcbc;border-left:4px solid #D64545;
                     border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:14px;display:flex;gap:10px;">
                     <span>⚑</span>
                     <div><b>{len(ncs_sem_pop)} não conformidade(s) sem rastreio ao POP.</b>
                     Toda NC deveria indicar o documento e o ponto exato do POP divergente.
-                    Veja a aba <b>Não conformidades</b> para regularizar.</div>
+                    Veja a aba <b>Não conformidades</b> para regularizar.
+                    <div style="margin-top:4px;color:#728177;font-size:12px">{detalhe_origem}</div></div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -1333,15 +1608,21 @@ with tabs[3]:
                         <div class="trilho"><i style="width:{min(100,nota)}%;background:{f['cor']}"></i></div>
                         <div class="val" style="color:{f['cor']}">{nota:.2f}</div>
                     </div>"""
-                html_proc += '<h3 style="margin-top:22px">Score por bloco do checklist <span style="font-size:11px;color:#728177;font-weight:500">rede — última auditoria de cada loja</span></h3>'
-                for item in topicos_medias:
-                    f = faixa(item['media'])
-                    html_proc += f"""<div class="aud-barra">
-                        <div class="nome" title="{item['letra']}. {item['topico']} (peso {item['peso']}%)">{item['letra']}. {item['topico']} <span style="color:#728177;font-weight:400">(peso {item['peso']}%)</span></div>
-                        <div class="trilho"><i style="width:{min(100,item['media'])}%;background:{f['cor']}"></i></div>
-                        <div class="val" style="color:{f['cor']}">{item['media']:.2f}</div>
-                    </div>"""
                 st.markdown(html_proc + '</div>', unsafe_allow_html=True)
+
+            st.markdown('<div class="aud-card"><h3>Score por bloco do checklist <span style="font-size:11px;color:#728177;font-weight:500">rede — última auditoria de cada loja</span></h3>', unsafe_allow_html=True)
+            html_blocos = ""
+            for item in topicos_medias:
+                f = faixa(item['media'])
+                html_blocos += f"""<div class="aud-barra">
+                    <div class="nome" title="{item['letra']}. {item['topico']} (peso {item['peso']}%)">{item['letra']}. {item['topico']} <span style="color:#728177;font-weight:400">(peso {item['peso']}%)</span></div>
+                    <div class="trilho"><i style="width:{min(100,item['media'])}%;background:{f['cor']}"></i></div>
+                    <div class="val" style="color:{f['cor']}">{item['media']:.2f}</div>
+                </div>"""
+            st.markdown(html_blocos + '</div>', unsafe_allow_html=True)
+
+            # ── LEGENDA DA CLASSIFICAÇÃO ──
+            st.markdown(legenda_faixa_html(), unsafe_allow_html=True)
 
             # ── GAPS RECORRENTES NA REDE (PARETO) ──
             st.markdown('<div class="aud-card" style="margin-top:16px"><h3>Gaps recorrentes na rede <span style="font-size:11px;color:#728177;font-weight:500">não conformidades agrupadas pelos itens do checklist</span></h3>', unsafe_allow_html=True)
@@ -1559,7 +1840,10 @@ with tabs[3]:
                             html += "<div style='text-align:center;padding:20px;color:#728177;font-size:0.85rem;'>Nenhuma auditoria desta frente.</div>"
 
                         st.markdown(html, unsafe_allow_html=True)
-    
+
+            # ── LEGENDA DA CLASSIFICAÇÃO ──
+            st.markdown(legenda_faixa_html(), unsafe_allow_html=True)
+
     # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 3 - MAPA DE RISCO (HEATMAP)
     # ═══════════════════════════════════════════════════════════════════
@@ -1723,17 +2007,7 @@ with tabs[3]:
                 st.caption(f"{len(df_heat)} loja(s) auditada(s) · Exibindo a última auditoria de cada loja")
                 
                 # ── LEGENDA (gerada a partir de faixa(), sem duplicar valores) ──
-                faixas_ref = [(95, '≥ 90'), (85, '80-89'), (75, '70-79'), (65, '60-69'), (30, '< 60')]
-                legenda_html = '<div style="display:flex;gap:20px;flex-wrap:wrap;font-size:0.85rem;color:#728177;margin-top:16px;padding-top:12px;border-top:1px solid #EEF3EE;">'
-                for amostra, faixa_txt in faixas_ref:
-                    fx = faixa(amostra)
-                    legenda_html += (
-                        '<span style="display:flex;align-items:center;gap:6px;">'
-                        f'<span style="display:inline-block;width:16px;height:16px;border-radius:4px;background:{fx["cor"]};"></span>'
-                        f'{fx["rot"]} ({faixa_txt})</span>'
-                    )
-                legenda_html += '</div>'
-                st.markdown(legenda_html, unsafe_allow_html=True)
+                st.markdown(legenda_faixa_html(), unsafe_allow_html=True)
                 
                 # ── EXPORTAR E ATUALIZAR ──
                 st.markdown("---")
@@ -1788,18 +2062,17 @@ with tabs[3]:
             return 0.0
 
         def _aud_faixa_v2(nota: float) -> dict:
-            """Régua oficial da referência v2, restrita a esta subaba."""
-            if nota >= 90:
-                return {'rot': 'Referência', 'risco': 'Mínimo', 'prio': 'Expansão — disseminar o modelo para outras unidades', 'cor': '#1E7A2A'}
-            if nota >= 76:
-                return {'rot': 'Avançado', 'risco': 'Mínimo', 'prio': 'Excelência — benchmark interno e mentoria', 'cor': '#5FB65B'}
-            if nota >= 61:
-                return {'rot': 'Adequado', 'risco': 'Baixo', 'prio': 'Melhoria contínua — revisão mensal dos gaps', 'cor': '#E8B23A'}
-            if nota >= 41:
-                return {'rot': 'Em Desenvolvimento', 'risco': 'Médio', 'prio': 'Prioritária — plano de ação em 60 dias', 'cor': '#E67E22'}
-            if nota >= 21:
-                return {'rot': 'Insuficiente', 'risco': 'Alto', 'prio': 'Urgente — plano estrutural em até 30 dias', 'cor': '#D64545'}
-            return {'rot': 'Crítico', 'risco': 'Crítico', 'prio': 'Imediata — intervenção emergencial', 'cor': '#8E2020'}
+            """Régua única do dashboard (mesma de faixa()), com risco e prioridade de atuação."""
+            f = faixa(nota)
+            extra_por_rot = {
+                'Excelente': {'risco': 'Mínimo', 'prio': 'Expansão — disseminar o modelo para outras lojas'},
+                'Bom':       {'risco': 'Baixo',  'prio': 'Melhoria contínua — revisão mensal dos gaps'},
+                'Atenção':   {'risco': 'Médio',  'prio': 'Prioritária — plano de ação em 60 dias'},
+                'Risco':     {'risco': 'Alto',   'prio': 'Urgente — plano estrutural em até 30 dias'},
+                'Crítico':   {'risco': 'Crítico','prio': 'Imediata — intervenção emergencial'},
+            }
+            extra = extra_por_rot.get(f['rot'], {'risco': '', 'prio': ''})
+            return {'rot': f['rot'], 'risco': extra['risco'], 'prio': extra['prio'], 'cor': f['hex']}
 
         def _aud_txt(value) -> str:
             if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -2155,6 +2428,9 @@ with tabs[3]:
                                 <div class="aud-v2-empty">Não há notas numéricas suficientes para montar a série histórica.</div>
                             </div>
                         ''')
+
+                # ── LEGENDA DA CLASSIFICAÇÃO ──
+                st.markdown(legenda_faixa_html(), unsafe_allow_html=True)
     # ═══════════════════════════════════════════════════════════════════
     # SUB-ABA 5 - NÃO CONFORMIDADES
     # ═══════════════════════════════════════════════════════════════════
@@ -2284,11 +2560,46 @@ with tabs[3]:
                         f"{CHECKLISTS.get(nc_modal.get('_tipo'), {}).get('nome', nc_modal.get('_tipo'))} · "
                         f"Loja {nc_modal.get('_loja')} · Item {nc_modal.get('codigo_item') or '—'}"
                     )
-                    novo_status = st.selectbox(
-                        "Status", status_opcoes,
-                        index=status_opcoes.index(status_atual) if status_atual in status_opcoes else 0,
-                        key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_status",
+                    crit_opcoes = ['Alta', 'Média', 'Baixa']
+                    crit_atual = _aud_txt(nc_modal.get('criticidade')) or 'Média'
+                    mcrit, mstatus = st.columns(2)
+                    with mcrit:
+                        nova_criticidade = st.selectbox(
+                            "Criticidade", crit_opcoes,
+                            index=crit_opcoes.index(crit_atual) if crit_atual in crit_opcoes else 1,
+                            key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_crit",
+                        )
+                    with mstatus:
+                        novo_status = st.selectbox(
+                            "Status", status_opcoes,
+                            index=status_opcoes.index(status_atual) if status_atual in status_opcoes else 0,
+                            key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_status",
+                        )
+
+                    df_pops_modal = load()
+                    pop_atual_cod = _aud_txt(nc_modal.get('pop_codigo_2'))
+                    opcoes_pop_modal = {'— sem vínculo —': None}
+                    if not df_pops_modal.empty:
+                        for _, prow in df_pops_modal.iterrows():
+                            cod = str(prow.get('codigo_2', '')).strip()
+                            nome = str(prow.get('processo', '')).strip()
+                            if nome:
+                                opcoes_pop_modal[f"{cod} — {nome}" if cod else nome] = prow
+                    rotulo_pop_atual = next(
+                        (r for r, v in opcoes_pop_modal.items() if v is not None and str(v.get('codigo_2', '')).strip() == pop_atual_cod),
+                        '— sem vínculo —',
                     )
+                    escolha_pop_modal = st.selectbox(
+                        "Documento (POP)", list(opcoes_pop_modal),
+                        index=list(opcoes_pop_modal).index(rotulo_pop_atual),
+                        key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_pop",
+                    )
+                    novo_ponto_pop = st.text_input(
+                        "Ponto do POP divergente", value=nc_modal.get('ponto_pop', ''),
+                        placeholder="Etapa, passo, seção, anexo ou página",
+                        key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_ponto",
+                    )
+
                     m1, m2 = st.columns(2)
                     with m1:
                         novo_resp = st.text_input(
@@ -2325,9 +2636,20 @@ with tabs[3]:
                             idx_nc = nc_modal['_idx']
                             if idx_nc < len(criticas_norm):
                                 criticas_norm[idx_nc]['status'] = novo_status
+                                criticas_norm[idx_nc]['criticidade'] = nova_criticidade
                                 criticas_norm[idx_nc]['responsavel'] = novo_resp.strip()
                                 criticas_norm[idx_nc]['prazo'] = novo_prazo.strftime('%Y-%m-%d') if novo_prazo else ''
                                 criticas_norm[idx_nc]['acao_corretiva'] = nova_acao.strip()
+                                criticas_norm[idx_nc]['ponto_pop'] = novo_ponto_pop.strip()
+                                row_pop_modal = opcoes_pop_modal.get(escolha_pop_modal)
+                                if row_pop_modal is not None:
+                                    criticas_norm[idx_nc]['pop_id'] = row_pop_modal.get('id')
+                                    criticas_norm[idx_nc]['pop_nome'] = str(row_pop_modal.get('processo', '')).strip()
+                                    criticas_norm[idx_nc]['pop_codigo_2'] = str(row_pop_modal.get('codigo_2', '')).strip()
+                                else:
+                                    criticas_norm[idx_nc]['pop_id'] = None
+                                    criticas_norm[idx_nc]['pop_nome'] = ''
+                                    criticas_norm[idx_nc]['pop_codigo_2'] = ''
                                 try:
                                     atualizar_auditoria(aud_id, criticas_norm)
                                     st.cache_data.clear()
@@ -2575,6 +2897,7 @@ with tabs[3]:
                     elif nota >= 70: return '#E8B23A'
                     elif nota >= 60: return '#E67E22'
                     else: return '#D64545'
+
                 
                 # Constrói a tabela HTML
                 html_table = """
@@ -2674,14 +2997,16 @@ with tabs[3]:
                             <th>Data</th>
                             <th>Loja</th>
                             <th>Frente</th>
-                            <th>Cód.</th>
-                            <th class="center">Aderência</th>
-                            <th class="center">Maturidade</th>
-                            <th class="center">Conhecimento</th>
-                            <th class="center">Eficiência</th>
-                            <th class="center">Gaps/Estrut.</th>
-                            <th class="center">Nota</th>
-                            <th class="center">Nível</th>
+                            <th>Auditor</th>
+                            <th class="center">A</th>
+                            <th class="center">B</th>
+                            <th class="center">C</th>
+                            <th class="center">D</th>
+                            <th class="center">E</th>
+                            <th class="center">Score</th>
+                            <th>Classificação</th>
+                            <th class="center">NC</th>
+                            <th class="center">Sem POP</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -2701,9 +3026,25 @@ with tabs[3]:
                     badge_class = tipo_info[1]
                     frente_html = f'<span class="badge-tipo {badge_class}">{frente_nome}</span>' if badge_class else row['tipo']
                     
-                    # Código
-                    codigo_html = f'<span class="codigo-tipo">{row["tipo"]}</span>'
-                    
+                    # Auditor
+                    auditor_html = f'<td>{row.get("avaliador", "") or "—"}</td>'
+
+                    # Não conformidades
+                    criticas_linha = row['criticas'] if isinstance(row.get('criticas'), list) else []
+                    criticas_norm_linha = [normalizar_critica(c) for c in criticas_linha]
+                    n_ncs_linha = len(criticas_norm_linha)
+                    if n_ncs_linha:
+                        nc_html = f'<td class="center"><span class="badge-status badge-risco">{n_ncs_linha}</span></td>'
+                    else:
+                        nc_html = '<td class="center">—</td>'
+
+                    # Não conformidades sem POP vinculado
+                    n_sem_pop_linha = sum(1 for nc in criticas_norm_linha if not (nc.get('pop_nome') or '').strip())
+                    if n_sem_pop_linha:
+                        sem_pop_html = f'<td class="center"><span class="badge-status badge-critico" title="Não conformidades sem POP de referência vinculado">{n_sem_pop_linha}</span></td>'
+                    else:
+                        sem_pop_html = '<td class="center">—</td>'
+
                     # Tópicos
                     topicos_html = ""
                     if isinstance(row['topicos'], list):
@@ -2719,20 +3060,22 @@ with tabs[3]:
                     nota = row['total']
                     cor = cor_nota(nota)
                     nota_html = f'<td class="center"><span class="nota-num" style="color:{cor}">{nota:.2f}</span></td>'
-                    
-                    # Nível
-                    nivel = nivel_maturidade(nota)
-                    nivel_html = f'<td class="center"><span class="badge-status" style="background:{NIVEIS[nivel]["hex"]};color:white">N{nivel}</span></td>'
-                    
+
+                    # Classificação (mesma régua do Painel geral / Rankings)
+                    f_class = faixa(nota)
+                    classificacao_html = f'<td><span class="badge-status" style="background:{f_class["hex"]};color:white">{f_class["rot"]}</span></td>'
+
                     html_table += f"""
                         <tr>
                             <td>{data_str}</td>
                             <td>{loja_str}</td>
                             <td>{frente_html}</td>
-                            <td>{codigo_html}</td>
+                            {auditor_html}
                             {topicos_html}
                             {nota_html}
-                            {nivel_html}
+                            {classificacao_html}
+                            {nc_html}
+                            {sem_pop_html}
                         </tr>
                     """
                 
@@ -2749,7 +3092,10 @@ with tabs[3]:
                 st.components.v1.html(html_table, height=altura_hist, scrolling=True)
 
                 st.caption(f"{len(df_hist)} registro(s) · {df_hist['loja'].nunique()} lojas auditadas")
-                
+
+                # ── LEGENDA DA CLASSIFICAÇÃO ──
+                st.markdown(legenda_faixa_html(), unsafe_allow_html=True)
+
                 # ── EXPORTAR HISTÓRICO ──
                 st.markdown("---")
                 col1, col2 = st.columns(2)
@@ -3224,9 +3570,10 @@ with tabs[3]:
                     pop_base_id = pop_base.get('id')
                     pop_base_nome = str(pop_base.get('processo', '')).strip()
                     pop_base_cod = str(pop_base.get('codigo_2', '')).strip()
+                    pop_base_link = str(pop_base.get('link_documento', '') or '').strip()
                     st.success(f"**{pop_base_cod}** — {pop_base_nome}")
                 else:
-                    pop_base_id, pop_base_nome, pop_base_cod = None, '', ''
+                    pop_base_id, pop_base_nome, pop_base_cod, pop_base_link = None, '', '', ''
                     df_frente = listar_processos_por_frente(df_pops_todos, tipo)
                     base_pool = df_frente if not df_frente.empty else df_pops_todos
 
@@ -3250,15 +3597,16 @@ with tabs[3]:
                     if row_base is not None:
                         pop_base_id = row_base.get('id')
                         pop_base_nome = str(row_base.get('processo', '')).strip()
+                        pop_base_link = str(row_base.get('link_documento', '') or '').strip()
                         pop_base_cod = str(row_base.get('codigo_2', '')).strip()
 
                 st.markdown(
                     '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
                     'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
-                    'Não conformidades críticas</div>'
+                    'Não conformidades apuradas automaticamente</div>'
                     '<div style="font-size:.8rem;color:#728177;margin:.2rem 0 .6rem;">'
-                    'Itens abaixo de 60%. O ponto do POP vem do próprio enunciado quando ele '
-                    'cita seção, anexo ou página — confira e ajuste se precisar.</div>',
+                    'Itens abaixo de 60% viram não conformidade com criticidade, responsável, '
+                    'prazo e ação corretiva definidos pela régua do checklist — nada precisa ser digitado.</div>',
                     unsafe_allow_html=True,
                 )
 
@@ -3269,80 +3617,83 @@ with tabs[3]:
                     st.success("Nenhum item abaixo de 60% neste PDF.")
                 else:
                     for item in itens_criticos:
-                        pontos = detectar_pontos_pop(item['descricao'])
-                        selo = "📎 " + " · ".join(pontos[:3]) if pontos else "sem ponto citado"
-
-                        # Criticidade sugerida a partir do próprio pct do item (paridade
-                        # com o HTML: nota mais baixa = mais crítico), sempre editável.
-                        if item['pct'] < 30:
-                            crit_sugerida = 'Alta'
-                        elif item['pct'] < 50:
-                            crit_sugerida = 'Média'
-                        else:
-                            crit_sugerida = 'Baixa'
-
-                        desc_item = item['descricao_curta']
-                        desc_item_curta = desc_item if len(desc_item) <= 80 else desc_item[:79].rstrip() + '…'
-                        with st.expander(
-                            f"[{item['codigo']}] {item['pct']:.1f}% · {desc_item_curta} — {selo}",
-                            expanded=False,
-                        ):
-                            if item.get('observacao'):
-                                st.caption(f"Observação do auditor: {item['observacao']}")
-                            ponto = st.text_input(
-                                "Ponto do POP divergente",
-                                value=" · ".join(pontos[:3]),
-                                placeholder="Etapa, passo, seção, anexo ou página",
-                                key=f"pop_ponto_{item['codigo']}",
-                            )
-
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                criticidade_item = st.selectbox(
-                                    "Criticidade", ['Alta', 'Média', 'Baixa'],
-                                    index=['Alta', 'Média', 'Baixa'].index(crit_sugerida),
-                                    key=f"pop_crit_{item['codigo']}",
-                                )
-                                status_item = st.selectbox(
-                                    "Status", ['Aberta', 'Em andamento', 'Concluída', 'Cancelada'],
-                                    key=f"pop_status_{item['codigo']}",
-                                )
-                            with col_b:
-                                responsavel_item = st.text_input(
-                                    "Responsável", key=f"pop_resp_{item['codigo']}",
-                                )
-                                prazo_item = st.date_input(
-                                    "Prazo", value=None, format="DD/MM/YYYY", key=f"pop_prazo_{item['codigo']}",
-                                )
-                            acao_item = st.text_area(
-                                "Ação corretiva", key=f"pop_acao_{item['codigo']}", height=70,
-                            )
-
-                        criticas_estruturadas.append({
-                            'texto': (
-                                f"{item['codigo']} — {item['descricao_curta']} "
-                                f"({item['obtido']:.2f}/{item['possivel']:.2f} → {item['pct']:.1f}%)"
-                                + (f" | Nível {item['nivel']}: {item['nivel_txt']}" if item['nivel'] is not None else "")
-                                + (f" | Obs: {item['observacao']}" if item.get('observacao') else "")
-                            ),
-                            'codigo_item': item['codigo'],
+                        nc_auto = auditar_item_automaticamente(
+                            item, tipo, data_audit,
+                            pop_nome=pop_base_nome, pop_link=pop_base_link,
+                        )
+                        nc_auto.update({
                             'pop_id': pop_base_id,
                             'pop_nome': pop_base_nome,
                             'pop_codigo_2': pop_base_cod,
-                            'ponto_pop': ponto.strip(),
                             'confianca': 'base' if pop_base_nome else None,
-                            'status': status_item,
-                            'criticidade': criticidade_item,
-                            'responsavel': responsavel_item.strip(),
-                            'prazo': prazo_item.strftime('%Y-%m-%d') if prazo_item else '',
-                            'acao_corretiva': acao_item.strip(),
-                            'evidencia': item.get('observacao', '') or '',
                         })
+                        criticas_estruturadas.append(nc_auto)
+
+                    df_apuradas = pd.DataFrame([
+                        {
+                            'Item': nc['codigo_item'],
+                            'Bloco': _bloco_do_item(nc['codigo_item']),
+                            'Criticidade': nc['criticidade'],
+                            'Ponto do POP': nc['ponto_pop'] or '—',
+                            'Ação corretiva': nc['acao_corretiva'],
+                        }
+                        for nc in criticas_estruturadas
+                    ])
+                    st.dataframe(df_apuradas, use_container_width=True, hide_index=True)
+
+                    n_alta = sum(1 for nc in criticas_estruturadas if nc['criticidade'] == 'Alta')
+                    n_sem_ponto = sum(1 for nc in criticas_estruturadas if not nc['ponto_pop'])
+                    resumo = f"{len(criticas_estruturadas)} não conformidade(s) apurada(s) · {n_alta} de criticidade alta"
+                    if n_sem_ponto:
+                        resumo += f" · {n_sem_ponto} sem ponto do POP localizado"
+                    st.caption(resumo)
+
+                    with st.expander(
+                        f"Definir responsável e ajustar não conformidades ({len(criticas_estruturadas)})",
+                        expanded=True,
+                    ):
+                        st.caption(
+                            "Criticidade, prazo e ação corretiva já vêm calculados. O "
+                            "responsável depende da loja — defina quem vai resolver cada item."
+                        )
+                        rotulos_nc = {
+                            f"[{nc['codigo_item']}] {nc['criticidade']} · {nc['responsavel'] or 'sem responsável'}": i
+                            for i, nc in enumerate(criticas_estruturadas)
+                        }
+                        sel_nc = st.selectbox("Não conformidade", list(rotulos_nc), key="import_nc_ajuste")
+                        idx_nc_aj = rotulos_nc[sel_nc]
+                        nc_aj = criticas_estruturadas[idx_nc_aj]
+                        aj1, aj2 = st.columns(2)
+                        with aj1:
+                            nc_aj['criticidade'] = st.selectbox(
+                                "Criticidade", ['Alta', 'Média', 'Baixa'],
+                                index=['Alta', 'Média', 'Baixa'].index(nc_aj['criticidade']),
+                                key=f"import_aj_crit_{idx_nc_aj}",
+                            )
+                            nc_aj['responsavel'] = st.text_input(
+                                "Responsável", value=nc_aj['responsavel'],
+                                key=f"import_aj_resp_{idx_nc_aj}",
+                            )
+                        with aj2:
+                            nc_aj['ponto_pop'] = st.text_input(
+                                "Ponto do POP divergente", value=nc_aj['ponto_pop'],
+                                placeholder="Etapa, passo, seção, anexo ou página",
+                                key=f"import_aj_ponto_{idx_nc_aj}",
+                            )
+                            prazo_aj = st.date_input(
+                                "Prazo",
+                                value=datetime.strptime(nc_aj['prazo'], '%Y-%m-%d') if nc_aj['prazo'] else None,
+                                format="DD/MM/YYYY", key=f"import_aj_prazo_{idx_nc_aj}",
+                            )
+                            nc_aj['prazo'] = prazo_aj.strftime('%Y-%m-%d') if prazo_aj else ''
+                        nc_aj['acao_corretiva'] = st.text_area(
+                            "Ação corretiva", value=nc_aj['acao_corretiva'], height=70,
+                            key=f"import_aj_acao_{idx_nc_aj}",
+                        )
 
                     if not pop_base_nome:
-                        n_criticas = len(criticas_estruturadas)
                         st.warning(
-                            f"{n_criticas} não conformidade(s) sem POP vinculado. Dá para "
+                            f"{len(criticas_estruturadas)} não conformidade(s) sem POP vinculado. Dá para "
                             "salvar assim, mas o rastreio ao processo fica pendente."
                         )
 
@@ -3857,7 +4208,11 @@ with tabs[3]:
             st.caption("Cole o JSON exportado de outro painel ou backup. Registros com a mesma loja, "
                        "frente e data são atualizados; os demais são acrescentados.")
 
-            imp_txt = st.text_area("JSON de auditorias", placeholder="Cole aqui o JSON exportado", height=160,
+            st.markdown(
+                '<style>textarea[aria-label="JSON de auditorias"]{min-height:90px !important;height:90px !important;}</style>',
+                unsafe_allow_html=True,
+            )
+            imp_txt = st.text_area("JSON de auditorias", placeholder="Cole aqui o JSON exportado", height=90,
                                     key="dados_import_txt", label_visibility="collapsed")
 
             if st.button("Importar e consolidar", type="primary", use_container_width=True, key="dados_import_btn"):
