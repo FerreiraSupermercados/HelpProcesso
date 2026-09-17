@@ -2043,9 +2043,17 @@ with tabs[3]:
         else:
             
             opcoes_heatmap = {
-                f"{config['nome']} — {codigo}": codigo
-                for codigo, config in CHECKLISTS.items()
+                f"{CHECKLISTS.get(codigo, {'nome': codigo})['nome']} — {codigo}": codigo
+                for codigo in (
+                    [codigo for codigo in CHECKLISTS
+                     if codigo in set(df_auditorias['tipo'].astype(str).tolist())]
+                    + sorted(
+                        set(df_auditorias['tipo'].astype(str).tolist()) - set(CHECKLISTS)
+                    )
+                )
             }
+            if st.session_state.get("heatmap_tipo") not in opcoes_heatmap:
+                st.session_state.pop("heatmap_tipo", None)
             tipo_heatmap_rotulo = st.selectbox(
                 "Selecione a Frente",
                 list(opcoes_heatmap),
@@ -2660,11 +2668,20 @@ with tabs[3]:
                     f_loja_rotulo = st.selectbox("Loja", list(lojas_nc_map), key="nc_v2_loja")
                     f_loja = lojas_nc_map[f_loja_rotulo]
                 with fc3:
+                    tipos_nc_presentes = {
+                        _aud_txt(n.get('_tipo')) for n in ncs_all if _aud_txt(n.get('_tipo'))
+                    }
+                    tipos_nc_ordenados = (
+                        [codigo for codigo in CHECKLISTS if codigo in tipos_nc_presentes]
+                        + sorted(tipos_nc_presentes - set(CHECKLISTS))
+                    )
                     tipos_nc_map = {"Todas as frentes": "Todas"}
                     tipos_nc_map.update({
-                        f"{config['nome']} — {codigo}": codigo
-                        for codigo, config in CHECKLISTS.items()
+                        f"{CHECKLISTS.get(codigo, {'nome': codigo})['nome']} — {codigo}": codigo
+                        for codigo in tipos_nc_ordenados
                     })
+                    if st.session_state.get("nc_v2_tipo") not in tipos_nc_map:
+                        st.session_state.pop("nc_v2_tipo", None)
                     f_tipo_rotulo = st.selectbox("Frente", list(tipos_nc_map), key="nc_v2_tipo")
                     f_tipo = tipos_nc_map[f_tipo_rotulo]
                 with fc4:
@@ -2747,30 +2764,6 @@ with tabs[3]:
                             key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_status",
                         )
 
-                    df_pops_modal = load()
-                    pop_atual_cod = _aud_txt(nc_modal.get('pop_codigo_2'))
-                    opcoes_pop_modal = {'— sem vínculo —': None}
-                    if not df_pops_modal.empty:
-                        for _, prow in df_pops_modal.iterrows():
-                            cod = str(prow.get('codigo_2', '')).strip()
-                            nome = str(prow.get('processo', '')).strip()
-                            if nome:
-                                opcoes_pop_modal[f"{cod} — {nome}" if cod else nome] = prow
-                    rotulo_pop_atual = next(
-                        (r for r, v in opcoes_pop_modal.items() if v is not None and str(v.get('codigo_2', '')).strip() == pop_atual_cod),
-                        '— sem vínculo —',
-                    )
-                    escolha_pop_modal = st.selectbox(
-                        "Documento (POP)", list(opcoes_pop_modal),
-                        index=list(opcoes_pop_modal).index(rotulo_pop_atual),
-                        key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_pop",
-                    )
-                    novo_ponto_pop = st.text_input(
-                        "Ponto do POP divergente", value=nc_modal.get('ponto_pop', ''),
-                        placeholder="Etapa, passo, seção, anexo ou página",
-                        key=f"modal_{nc_modal['_auditoria_id']}_{nc_modal['_idx']}_ponto",
-                    )
-
                     m1, m2 = st.columns(2)
                     with m1:
                         novo_resp = st.text_input(
@@ -2811,16 +2804,6 @@ with tabs[3]:
                                 criticas_norm[idx_nc]['responsavel'] = novo_resp.strip()
                                 criticas_norm[idx_nc]['prazo'] = novo_prazo.strftime('%Y-%m-%d') if novo_prazo else ''
                                 criticas_norm[idx_nc]['acao_corretiva'] = nova_acao.strip()
-                                criticas_norm[idx_nc]['ponto_pop'] = novo_ponto_pop.strip()
-                                row_pop_modal = opcoes_pop_modal.get(escolha_pop_modal)
-                                if row_pop_modal is not None:
-                                    criticas_norm[idx_nc]['pop_id'] = row_pop_modal.get('id')
-                                    criticas_norm[idx_nc]['pop_nome'] = str(row_pop_modal.get('processo', '')).strip()
-                                    criticas_norm[idx_nc]['pop_codigo_2'] = str(row_pop_modal.get('codigo_2', '')).strip()
-                                else:
-                                    criticas_norm[idx_nc]['pop_id'] = None
-                                    criticas_norm[idx_nc]['pop_nome'] = ''
-                                    criticas_norm[idx_nc]['pop_codigo_2'] = ''
                                 try:
                                     atualizar_auditoria(aud_id, criticas_norm)
                                     st.cache_data.clear()
@@ -3903,55 +3886,10 @@ with tabs[3]:
                             })
                             criticas_estruturadas.append(nc_auto)
 
-                        n_alta = sum(1 for nc in criticas_estruturadas if nc['criticidade'] == 'Alta')
-                        n_sem_ponto = sum(1 for nc in criticas_estruturadas if not nc['ponto_pop'])
-                        resumo = f"{len(criticas_estruturadas)} não conformidade(s) apurada(s) · {n_alta} de criticidade alta"
-                        if n_sem_ponto:
-                            resumo += f" · {n_sem_ponto} sem ponto do POP localizado"
-                        st.caption(resumo)
-
-                        with st.expander(
-                            f"Definir responsável e ajustar não conformidades ({len(criticas_estruturadas)})",
-                            expanded=True,
-                        ):
-                            st.caption(
-                                "Criticidade, prazo e ação corretiva já vêm calculados. O "
-                                "responsável depende da loja — defina quem vai resolver cada item."
-                            )
-                            rotulos_nc = {
-                                f"[{nc['codigo_item']}] {nc['criticidade']} · {nc['responsavel'] or 'sem responsável'}": i
-                                for i, nc in enumerate(criticas_estruturadas)
-                            }
-                            sel_nc = st.selectbox("Não conformidade", list(rotulos_nc), key="import_nc_ajuste")
-                            idx_nc_aj = rotulos_nc[sel_nc]
-                            nc_aj = criticas_estruturadas[idx_nc_aj]
-                            aj1, aj2 = st.columns(2)
-                            with aj1:
-                                nc_aj['criticidade'] = st.selectbox(
-                                    "Criticidade", ['Alta', 'Média', 'Baixa'],
-                                    index=['Alta', 'Média', 'Baixa'].index(nc_aj['criticidade']),
-                                    key=f"import_aj_crit_{idx_nc_aj}",
-                                )
-                                nc_aj['responsavel'] = st.text_input(
-                                    "Responsável", value=nc_aj['responsavel'],
-                                    key=f"import_aj_resp_{idx_nc_aj}",
-                                )
-                            with aj2:
-                                nc_aj['ponto_pop'] = st.text_input(
-                                    "Ponto do POP divergente", value=nc_aj['ponto_pop'],
-                                    placeholder="Etapa, passo, seção, anexo ou página",
-                                    key=f"import_aj_ponto_{idx_nc_aj}",
-                                )
-                                prazo_aj = st.date_input(
-                                    "Prazo",
-                                    value=datetime.strptime(nc_aj['prazo'], '%Y-%m-%d') if nc_aj['prazo'] else None,
-                                    format="DD/MM/YYYY", key=f"import_aj_prazo_{idx_nc_aj}",
-                                )
-                                nc_aj['prazo'] = prazo_aj.strftime('%Y-%m-%d') if prazo_aj else ''
-                            nc_aj['acao_corretiva'] = st.text_area(
-                                "Ação corretiva", value=nc_aj['acao_corretiva'], height=70,
-                                key=f"import_aj_acao_{idx_nc_aj}",
-                            )
+                        # Os itens já ficam prontos para gravação com os campos
+                        # derivados da auditoria e do POP. Responsável, prazo e
+                        # tratativa são ajustados depois na subaba Não conformidades,
+                        # como no fluxo do HTML v2; não abrir um editor gigante aqui.
 
                 st.markdown("---")
                 
