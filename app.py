@@ -673,15 +673,8 @@ with tabs[3]:
       --sombra:0 1px 2px rgba(18,51,28,.06),0 4px 16px rgba(18,51,28,.05);
       --disp:'Barlow Semi Condensed',system-ui,sans-serif;--corpo:'Inter',system-ui,sans-serif;
     }
-    @media (prefers-color-scheme: dark){
-      :root{
-        --verde:#4FBF58;--verde-esc:#6FD277;--verde-tinta:#DCEFDD;
-        --papel:#131A14;--branco:#1B241C;--borda:#2E3B2F;--texto:#E3EDE4;--suave:#93A594;
-        --sombra:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.28);
-      }
-    }
     .aud-card{background:var(--branco);border:1px solid var(--borda);border-radius:12px;padding:18px;box-shadow:var(--sombra);margin-bottom:14px}
-    .aud-card h3{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--verde-tinta);letter-spacing:.3px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
+    .aud-card h3{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--texto);letter-spacing:.3px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
     .aud-kpi .rot{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--suave);font-weight:600}
     .aud-kpi .num{font-family:var(--disp);font-size:40px;font-weight:700;line-height:1;margin:8px 0 2px;color:var(--verde-tinta)}
     .aud-kpi .pe{font-size:12px;color:var(--suave);margin-bottom:2px}
@@ -725,7 +718,7 @@ with tabs[3]:
     /* ── Cabeçalho de seção (padrão .cab do HTML de referência) ── */
     .aud-cab{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;
         padding-bottom:12px;border-bottom:1px solid var(--borda)}
-    .aud-cab h1{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--verde-tinta);line-height:1.15;letter-spacing:.2px;margin:0}
+    .aud-cab h1{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--texto);line-height:1.15;letter-spacing:.2px;margin:0}
     .aud-cab h1 .ic{margin-right:8px}
     .aud-cab .desc{color:var(--suave);font-size:13px;margin-top:6px;max-width:660px}
 
@@ -741,7 +734,7 @@ with tabs[3]:
     /* ── Análise por loja — paridade visual com o HTML de referência v2 ── */
     .aud-v2-card{background:var(--branco);border:1px solid var(--borda);border-radius:12px;
         padding:18px;box-shadow:var(--sombra);margin-bottom:14px}
-    .aud-v2-card h3{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--verde-esc);
+    .aud-v2-card h3{font-family:var(--disp);font-size:16px;font-weight:600;color:var(--texto);
         letter-spacing:.3px;margin:0 0 14px;display:flex;align-items:center;justify-content:space-between;
         gap:10px;flex-wrap:wrap}
     .aud-v2-card h3 .leve{font-size:11.5px;color:var(--suave);font-weight:500;font-family:var(--corpo);letter-spacing:0}
@@ -802,7 +795,7 @@ with tabs[3]:
     .aud-nc-pop.faltando{background:#fdeeee;border-color:#eebcbc;color:var(--crit)}
     .aud-nc-corpo{font-size:13px}
     .aud-nc-linha{display:flex;gap:6px;margin-top:5px;font-size:12.5px;line-height:1.35}
-    .aud-nc-linha b{color:var(--verde-esc);font-weight:600;flex-shrink:0}
+    .aud-nc-linha b{color:var(--texto);font-weight:600;flex-shrink:0}
     .aud-nc-rodape{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px;
         padding-top:10px;border-top:1px dashed var(--borda)}
     .aud-nc-filtros{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
