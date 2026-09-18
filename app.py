@@ -402,6 +402,7 @@ if _admin:
     tab_labels += ["Novo Processo", "Gerenciar"]
 tab_labels += ["Auditoria"] 
 tabs = st.tabs(tab_labels)
+audit_tab_index = 3 if _admin else 1
 
 with tabs[0]:
     total = len(df_raw)
@@ -662,7 +663,7 @@ if _admin:
                     
 
 # ════════════ ABA 4 — AUDITORIA (COM KPIs E GRÁFICOS DO HTML) ═══════════════
-with tabs[3]:
+with tabs[audit_tab_index]:
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
@@ -875,6 +876,30 @@ with tabs[3]:
     POSSIVEL = [35, 20, 15, 15, 15]
     SLOTS_CURTOS = ['Aderência', 'Maturidade', 'Conhecimento', 'Eficiência', 'Gaps/Estrut.']
     LETRAS_BLOCO = ['A', 'B', 'C', 'D', 'E']
+
+    def _codigo_frente_flexivel(nome: str) -> str:
+        """Gera um identificador estável para uma frente/setor novo."""
+        import unicodedata
+        base = unicodedata.normalize('NFKD', str(nome or ''))
+        base = base.encode('ascii', 'ignore').decode().upper()
+        slug = re.sub(r'[^A-Z0-9]+', '-', base).strip('-') or 'SEM-NOME'
+        return f'EXT-AUD-{slug[:48].rstrip("-")}'
+
+    def _registrar_checklist_flexivel(nome: str, codigo: str = None, slots: list = None) -> str:
+        """Registra uma frente nova só na Auditoria, sem alterar Processos."""
+        nome_limpo = re.sub(r'\s+', ' ', str(nome or '')).strip()
+        codigo = codigo or _codigo_frente_flexivel(nome_limpo)
+        nomes_slots = [
+            str(slot).strip() if str(slot or '').strip() else SLOTS_CURTOS[i]
+            for i, slot in enumerate((slots or [])[:5])
+        ]
+        nomes_slots += SLOTS_CURTOS[len(nomes_slots):]
+        CHECKLISTS.setdefault(codigo, {
+            'nome': nome_limpo or codigo,
+            'cor': '#728177',
+            'slots': nomes_slots[:5],
+        })
+        return codigo
     
     # Régua oficial da Auditoria — deve permanecer idêntica à do HTML v2.
     # A nota dos itens do checklist é outra régua: itens com nível <= 3 são
@@ -1379,6 +1404,15 @@ with tabs[3]:
 
     df_auditorias = carregar_dados_exemplo()
 
+    # Auditorias importadas podem trazer frentes novas. Recria o rótulo a partir
+    # do identificador salvo para que filtros, histórico e exportações não fiquem
+    # presos às quatro frentes originais.
+    if not df_auditorias.empty and 'tipo' in df_auditorias.columns:
+        for tipo_salvo in df_auditorias['tipo'].dropna().astype(str).unique():
+            if tipo_salvo not in CHECKLISTS and tipo_salvo.startswith('EXT-AUD-'):
+                nome_salvo = tipo_salvo.removeprefix('EXT-AUD-').replace('-', ' ').title()
+                _registrar_checklist_flexivel(nome_salvo, codigo=tipo_salvo)
+
     def vencida(nc: dict) -> bool:
         """True se a NC tem prazo definido, ainda não foi concluída e o prazo já passou."""
         from datetime import datetime as _dt
@@ -1653,7 +1687,7 @@ with tabs[3]:
     with sub_tabs[0]:
         st.markdown(cab_html(
             "Painel geral da rede",
-            "Consolidação das auditorias internas de Açougue, Frente de Loja e Recebimento.",
+            "Consolidação das auditorias internas de Açougue, Frente de Loja, Recebimento e Atacado.",
             "▩",
         ), unsafe_allow_html=True)
         
@@ -3023,10 +3057,15 @@ with tabs[3]:
             # ── CRIA TABELA ESTILIZADA ──
             if not df_hist.empty:
                 # Mapeamento de cores por tipo
+                classes_tipo = {
+                    'AÇO-AUD-01': 'badge-acougue',
+                    'FRE-AUD-02': 'badge-frente',
+                    'REC-AUD-03': 'badge-recebimento',
+                    'ATA-AUD-04': 'badge-atacado',
+                }
                 cores_tipo = {
-                    'AÇO-AUD-01': ('Açougue', 'badge-acougue'),
-                    'FRE-AUD-02': ('Frente de Loja', 'badge-frente'),
-                    'REC-AUD-03': ('Recebimento', 'badge-recebimento')
+                    codigo: (config.get('nome', codigo), classes_tipo.get(codigo, 'badge-custom'))
+                    for codigo, config in CHECKLISTS.items()
                 }
                 
                 # Função para badge de nota
@@ -3103,6 +3142,8 @@ with tabs[3]:
                 .badge-acougue { background: #B0442E; }
                 .badge-frente { background: #2E6BB0; }
                 .badge-recebimento { background: #7A4EB0; }
+                .badge-atacado { background: #C08A1E; }
+                .badge-custom { background: #728177; }
                 
                 .badge-status {
                     display: inline-block;
@@ -3363,6 +3404,7 @@ with tabs[3]:
                 'hora': '', 
                 'nota_total': 0.0,
                 'tipo_detectado': '',
+                'frente_nome': '',
                 'topicos': [0.0, 0.0, 0.0, 0.0, 0.0],
                 'topicos_possivel': [0.0, 0.0, 0.0, 0.0, 0.0],
                 'topicos_obtido': [0.0, 0.0, 0.0, 0.0, 0.0],
@@ -3384,6 +3426,30 @@ with tabs[3]:
                 dados['tipo_detectado'] = 'ATA-AUD-04'
             else:
                 dados['tipo_detectado'] = ''
+
+            if dados['tipo_detectado'] in CHECKLISTS:
+                dados['frente_nome'] = CHECKLISTS[dados['tipo_detectado']]['nome']
+            else:
+                # O título do relatório é a única origem aceita para descobrir
+                # uma frente nova; não usamos nome de arquivo nem similaridade.
+                cabecalho = re.search(
+                    r'AVALIA.{0,40}PROCESSOS\s*[-–—:]\s*([^\n(]+?)\s*\(\s*INTERNO\s*\)',
+                    conteudo_pdf[:1500], flags=re.IGNORECASE,
+                )
+                cabecalho = re.search(
+                    r'(?:AVALIA|AUDITORIA).{0,40}PROCESSOS\s*[-:]\s*([^\n(]+?)\s*\(\s*INTERNO\s*\)',
+                    conteudo_pdf[:1500], flags=re.IGNORECASE,
+                ) or cabecalho
+                cabecalho_flex = re.search(
+                    r'(?:AVALIA|AUDITORIA).{0,40}PROCESSOS\s*(?:-|:|\u2013|\u2014)\s*([^\n(]+?)\s*\(\s*INTERNO\s*\)',
+                    conteudo_pdf[:1500], flags=re.IGNORECASE,
+                )
+                if cabecalho_flex:
+                    cabecalho = cabecalho_flex
+                if cabecalho:
+                    dados['frente_nome'] = re.sub(r'\s+', ' ', cabecalho.group(1)).strip(' -–—')
+                    if dados['frente_nome']:
+                        dados['tipo_detectado'] = _codigo_frente_flexivel(dados['frente_nome'])
             
             def resumir_descricao(descricao):
                 d = descricao.strip()
@@ -3609,24 +3675,40 @@ with tabs[3]:
                     st.markdown('<span class="label-destaque">Loja</span>', unsafe_allow_html=True)
                     loja = st.selectbox("Loja", loja_opts, index=loja_opts.index(loja_default) if loja_default in loja_opts else 0, key="import_loja", label_visibility="hidden")
                     
-                    titulo_pdf = texto_completo[:300].upper()
-                    
-                    tipo_default = 'AÇO-AUD-01'  
-                    
-                    if 'AÇOUGUE' in titulo_pdf:
-                        tipo_default = 'AÇO-AUD-01'
-                    elif 'FRENTE DE LOJA' in titulo_pdf:
-                        tipo_default = 'FRE-AUD-02'
-                    elif 'RECEBIMENTO' in titulo_pdf:
-                        tipo_default = 'REC-AUD-03'
-                    elif 'ATACADO' in titulo_pdf:
-                        tipo_default = 'ATA-AUD-04'
-                    
+                    tipo_default = dados_extraidos.get('tipo_detectado') or ''
+                    frente_detectada = dados_extraidos.get('frente_nome') or ''
+                    if tipo_default and tipo_default not in CHECKLISTS:
+                        tipo_default = _registrar_checklist_flexivel(
+                            frente_detectada or tipo_default,
+                            codigo=tipo_default,
+                            slots=dados_extraidos.get('topicos_nomes'),
+                        )
+
                     st.markdown('<span class="label-destaque">Frente</span>', unsafe_allow_html=True)
+                    if not tipo_default:
+                        frente_informada = st.text_input(
+                            "Nome da frente/setor",
+                            value=frente_detectada,
+                            key="import_frente_nome",
+                            placeholder="Ex.: Segurança Alimentar",
+                        ).strip()
+                        if frente_informada:
+                            tipo_default = _registrar_checklist_flexivel(
+                                frente_informada,
+                                slots=dados_extraidos.get('topicos_nomes'),
+                            )
+                            dados_extraidos['tipo_detectado'] = tipo_default
+                            dados_extraidos['frente_nome'] = frente_informada
+
                     tipos_import_map = {
                         f"{config['nome']} — {codigo}": codigo
                         for codigo, config in CHECKLISTS.items()
                     }
+                    if not tipo_default:
+                        tipos_import_map = {
+                            "Frente não identificada — informe acima": None,
+                            **tipos_import_map,
+                        }
                     tipo_default_rotulo = next(
                         (rotulo for rotulo, codigo in tipos_import_map.items() if codigo == tipo_default),
                         next(iter(tipos_import_map)),
@@ -3667,7 +3749,7 @@ with tabs[3]:
                 with col2:
                     st.markdown('<span class="label-topicos">Resumo dos Tópicos</span>', unsafe_allow_html=True)
                     pcts = []
-                    slots = CHECKLISTS[tipo]['slots']
+                    slots = CHECKLISTS.get(tipo, {'slots': SLOTS_CURTOS})['slots']
                     
                     for i in range(5):
                         nome_pdf = ""
@@ -3702,14 +3784,14 @@ with tabs[3]:
                     'POP avaliado por este checklist — vínculo obrigatório</div>',
                     unsafe_allow_html=True,
                 )
-                # O vínculo não pode ser feito com um POP aleatório só porque ele
-                # possui PDF. Cada frente tem um POP-base próprio; sem esse cadastro
-                # (ou sem o PDF dele) a importação permanece bloqueada.
+                # Frentes conhecidas recebem o POP-base cadastrado como sugestão,
+                # mas o auditor pode escolher explicitamente outro POP legível.
+                # Frentes novas também usam a lista completa, sem seleção automática.
                 pop_base_cadastrado = pop_base_da_frente(df_pops_todos, tipo)
-                pops_importacao = (
-                    _pops_com_pdf(pd.DataFrame([pop_base_cadastrado]))
-                    if pop_base_cadastrado is not None else []
-                )
+                # Known fronts suggest the configured base POP, but the auditor
+                # may explicitly choose another readable POP. New fronts also
+                # use this list, with no automatic first-item selection.
+                pops_importacao = _pops_com_pdf(df_pops_todos)
                 pop_opcoes = {'— selecione o POP com PDF vinculado —': None}
                 pop_por_rotulo = {}
                 for pop in pops_importacao:
@@ -3720,13 +3802,23 @@ with tabs[3]:
                     pop_por_rotulo[rotulo] = pop
 
                 rotulo_sugerido = next(iter(pop_opcoes))
-                if pops_importacao:
-                    rotulo_sugerido = next(iter(pop_por_rotulo))
+                if pop_base_cadastrado is not None:
+                    pop_base_padrao = next(
+                        (pop for pop in pops_importacao
+                         if str(pop.get('id')) == str(pop_base_cadastrado.get('id'))),
+                        None,
+                    )
+                    if pop_base_padrao:
+                        rotulo_sugerido = next(
+                            (rotulo for rotulo, pop in pop_por_rotulo.items()
+                             if pop is pop_base_padrao),
+                            rotulo_sugerido,
+                        )
                 opcoes_pop_lista = list(pop_opcoes)
                 escolha_base = st.selectbox(
                     "POP de referência", opcoes_pop_lista,
                     index=opcoes_pop_lista.index(rotulo_sugerido),
-                    key="import_pop_base", label_visibility="collapsed",
+                    key=f"import_pop_base_{tipo or 'sem-frente'}", label_visibility="collapsed",
                 )
                 pop_escolhido = pop_por_rotulo.get(escolha_base)
                 if pop_escolhido:
@@ -3737,21 +3829,21 @@ with tabs[3]:
                     st.success(f"**{pop_base_cod or 'POP'}** — {pop_base_nome}")
                     st.caption(
                         "Este documento será lido página a página e usado para rastrear "
-                        "cada item do checklist. O documento é o POP-base cadastrado para esta frente."
+                        "cada item do checklist. A seleção é explícita e fica registrada na auditoria."
                     )
                     pop_preview = drive_preview(pop_base_link)
                     if pop_preview:
                         st.link_button("Abrir / visualizar POP vinculado", pop_preview)
                 else:
                     pop_base_id, pop_base_nome, pop_base_cod, pop_base_link = None, '', '', ''
-                    if pop_base_cadastrado is not None:
+                    if pop_base_cadastrado is not None and not pops_importacao:
                         pop_cod_sem_pdf = str(pop_base_cadastrado.get('codigo_2') or '').strip()
                         pop_nome_sem_pdf = str(pop_base_cadastrado.get('processo') or '').strip()
                         st.warning(
                             f"O POP-base desta frente ({pop_cod_sem_pdf} — {pop_nome_sem_pdf}) "
                             "está cadastrado, mas não possui PDF vinculado e não pode ser auditado."
                         )
-                    else:
+                    elif not pops_importacao:
                         st.error(
                             "Nenhum POP-base está configurado para esta frente. Cadastre e vincule "
                             "o documento correspondente antes de importar o checklist."
@@ -3760,6 +3852,12 @@ with tabs[3]:
                 # Nenhuma etapa de auditoria é montada antes de o POP ser
                 # selecionado e lido com sucesso. O checklist pode ser exibido,
                 # mas não gera pontos críticos nem editores de NC sem documento.
+                    elif tipo:
+                        st.info(
+                            "Selecione manualmente o POP correspondente. O sistema nao usa nome, "
+                            "palavras semelhantes ou o primeiro documento da lista para criar o vinculo."
+                        )
+
                 paginas_pop = _texto_pop_por_pagina(pop_base_link) if pop_base_link else []
                 pop_texto_lido = bool(
                     paginas_pop and any(str(pagina or '').strip() for pagina in paginas_pop)
@@ -4066,6 +4164,7 @@ with tabs[3]:
                 f"{config['nome']} — {codigo}": codigo
                 for codigo, config in CHECKLISTS.items()
             }
+            tipos_manuais["Nova frente/setor — informar"] = None
             tipo_rotulo = st.selectbox(
                 "Frente",
                 list(tipos_manuais),
@@ -4073,6 +4172,14 @@ with tabs[3]:
                 label_visibility="hidden"
             )
             tipo = tipos_manuais[tipo_rotulo]
+            if tipo is None:
+                nome_frente_manual = st.text_input(
+                    "Nome da nova frente/setor",
+                    key="manual_frente_nome",
+                    placeholder="Ex.: Segurança Alimentar",
+                ).strip()
+                if nome_frente_manual:
+                    tipo = _registrar_checklist_flexivel(nome_frente_manual)
             
             from datetime import datetime
             data_default_str = datetime.now().strftime('%d/%m/%Y')
@@ -4092,7 +4199,7 @@ with tabs[3]:
         with col2:
             st.markdown('<span class="label-topicos">Resumo dos Tópicos</span>', unsafe_allow_html=True)
             pcts = []
-            for i, slot in enumerate(CHECKLISTS[tipo]['slots']):
+            for i, slot in enumerate(CHECKLISTS.get(tipo, {'slots': SLOTS_CURTOS})['slots']):
                 pct = st.number_input(
                     f"{i+1}. {slot}",
                     min_value=0.0, max_value=100.0,
@@ -4107,7 +4214,47 @@ with tabs[3]:
         except Exception:
             df_pops_manual = pd.DataFrame()
 
-        pop_base_m = pop_base_da_frente(df_pops_manual, tipo)
+        pop_base_cadastrado_m = pop_base_da_frente(df_pops_manual, tipo)
+        pop_base_m = pop_base_cadastrado_m
+        pops_manuais = _pops_com_pdf(df_pops_manual)
+        pop_m_opcoes = {'— selecione o POP com PDF vinculado —': None}
+        pop_m_por_rotulo = {}
+        for pop in pops_manuais:
+            rotulo = pop['rotulo']
+            if rotulo in pop_m_opcoes:
+                rotulo = f"{rotulo} · ID {pop['id']}"
+            pop_m_opcoes[rotulo] = pop
+            pop_m_por_rotulo[rotulo] = pop
+        rotulo_m_default = next(iter(pop_m_opcoes))
+        if pop_base_m is not None:
+            pop_m_padrao = next(
+                (pop for pop in pops_manuais
+                 if str(pop.get('id')) == str(pop_base_m.get('id'))),
+                None,
+            )
+            if pop_m_padrao:
+                rotulo_m_default = next(
+                    (rotulo for rotulo, pop in pop_m_por_rotulo.items()
+                     if pop is pop_m_padrao),
+                    rotulo_m_default,
+                )
+        escolha_pop_manual = st.selectbox(
+            "POP de referencia", list(pop_m_opcoes),
+            index=list(pop_m_opcoes).index(rotulo_m_default),
+            key=f"manual_pop_base_{tipo or 'sem-frente'}", label_visibility="collapsed",
+        )
+        pop_m_escolhido = pop_m_por_rotulo.get(escolha_pop_manual)
+        if pop_m_escolhido:
+            # Normaliza o registro da lista para o formato usado no restante
+            # do fluxo manual, sem alterar o cadastro da aba Processos.
+            pop_base_m = {
+                'id': pop_m_escolhido.get('id'),
+                'processo': pop_m_escolhido.get('nome', ''),
+                'codigo_2': pop_m_escolhido.get('codigo', ''),
+                'link_documento': pop_m_escolhido.get('link', ''),
+            }
+        else:
+            pop_base_m = None
         st.markdown(
             '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
             'text-transform:uppercase;letter-spacing:.05em;margin-top:1.2rem;">'
@@ -4142,10 +4289,21 @@ with tabs[3]:
                         "O PDF do POP-base não pôde ser lido. A auditoria manual permanece bloqueada."
                     )
         else:
-            st.error(
-                "Nenhum POP-base está configurado para esta frente. "
-                "A auditoria manual está bloqueada até o documento correto ser cadastrado e vinculado."
-            )
+            if pop_base_cadastrado_m is not None and not pops_manuais:
+                st.warning(
+                    "O POP-base sugerido está cadastrado, mas não possui PDF legível. "
+                    "A auditoria manual permanece bloqueada."
+                )
+            elif not pops_manuais:
+                st.error(
+                    "Nenhum POP cadastrado com PDF legível está disponível para esta frente. "
+                    "Cadastre e vincule o documento correspondente antes de lançar a auditoria."
+                )
+            elif tipo:
+                st.info(
+                    "Selecione manualmente o POP correspondente. O sistema não usa nome, "
+                    "palavras semelhantes ou o primeiro documento da lista para criar o vínculo."
+                )
 
         st.markdown(
             '<div style="font-size:.85rem;font-weight:800;color:#0d2a16;'
@@ -4343,7 +4501,7 @@ with tabs[3]:
         if st.session_state.manual_reset:
             st.session_state.manual_reset = False
             # Limpa os campos do session_state
-            for key in ["manual_loja", "manual_tipo", "manual_data", "manual_avaliador"]:
+            for key in ["manual_loja", "manual_tipo", "manual_frente_nome", "manual_data", "manual_avaliador"]:
                 if key in st.session_state:
                     del st.session_state[key]
             for i in range(5):
@@ -4366,15 +4524,6 @@ with tabs[3]:
         n_aud = len(df_auditorias)
         n_lojas_aud = df_auditorias['loja'].nunique() if not df_auditorias.empty and 'loja' in df_auditorias.columns else 0
         n_ncs = int(df_auditorias['criticas'].apply(len).sum()) if not df_auditorias.empty and 'criticas' in df_auditorias.columns else 0
-
-        st.markdown(f"""
-        <div style="background:#EFFAF0;border:1px solid #BFE6C2;border-left:4px solid #1E7A2A;border-radius:8px;padding:11px 14px;font-size:13px;margin-bottom:16px;display:flex;gap:10px;">
-            <span style="font-size:18px;">✓</span>
-            <div><b>Dados compartilhados em tempo real.</b> Toda auditoria registrada aqui fica salva
-            automaticamente e aparece para qualquer pessoa que abrir o painel, em qualquer computador,
-            na mesma hora.</div>
-        </div>
-        """, unsafe_allow_html=True)
 
         col_exp, col_imp = st.columns(2)
 
