@@ -873,7 +873,7 @@ with tabs[3]:
             'Aderência ao processo', 'Maturidade operacional', 
             'Conhecimento e disseminação', 'Eficiência / performance', 'Gaps e processos não mapeados'
         ]},
-        'ATA-AUD-04': {'nome': 'Vendas Atacado', 'cor': '#C08A1E', 'slots': [
+        'ATA-AUD-04': {'nome': 'Atacado', 'cor': '#C08A1E', 'slots': [
             'Aderência ao processo', 'Maturidade operacional',
             'Conhecimento e disseminação', 'Eficiência / performance', 'Gaps e processos não mapeados'
         ]}
@@ -4395,17 +4395,12 @@ with tabs[3]:
                 csv_auditorias = df_para_csv_br(auditorias_para_exportacao(df_auditorias))
                 csv_ncs = df_para_csv_br(ncs_para_exportacao(todas_ncs(df_auditorias)))
 
-                json_base = df_auditorias.drop(columns=['nivel'], errors='ignore').to_json(orient='records', force_ascii=False, indent=1)
-
                 st.download_button("Auditorias (CSV)", data=csv_auditorias,
                     file_name=f"auditorias_ferreira_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv", use_container_width=True, key="dados_export_auditorias_csv")
                 st.download_button("Não conformidades (CSV)", data=csv_ncs,
                     file_name=f"nao_conformidades_ferreira_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv", use_container_width=True, key="dados_export_ncs_csv")
-                st.download_button("Base completa (JSON)", data=json_base,
-                    file_name=f"base_auditorias_ferreira_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
-                    mime="application/json", use_container_width=True, key="dados_export_json")
 
                 st.caption(f"{n_aud} auditorias · {n_ncs} não conformidades · {n_lojas_aud} loja(s)")
             st.markdown('</div>', unsafe_allow_html=True)
