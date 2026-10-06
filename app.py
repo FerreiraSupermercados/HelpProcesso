@@ -60,6 +60,9 @@ st.markdown("""
 html,body,[class*="css"]{font-family:'Nunito',sans-serif;color:var(--tx);}
 .stApp{background:var(--cr);}
 .block-container{padding:0 1.5rem 3rem!important;}
+/* O cabeçalho da aplicação ocupa o topo; evita a faixa nativa sobreposta. */
+[data-testid="stHeader"]{background:transparent!important;height:0!important;min-height:0!important;}
+[data-testid="stToolbar"],[data-testid="stDecoration"]{display:none!important;}
 
 /* ── Custom Streamlit Tabs ── */
 div[data-baseweb="tab-list"] {
@@ -100,6 +103,49 @@ button[role="tab"][aria-selected="true"] {
 [data-testid="stSidebar"] label{color:var(--am)!important;font-size:.67rem!important;font-weight:700!important;letter-spacing:.12em!important;text-transform:uppercase!important;}
 [data-testid="stSidebar"] [data-baseweb="select"]>div{background:rgba(255,255,255,.06)!important;border-color:rgba(248,193,10,.22)!important;border-radius:8px!important;}
 [data-testid="stSidebar"] input{background:rgba(255,255,255,.06)!important;border-color:rgba(248,193,10,.22)!important;border-radius:8px!important;}
+/* Campos legíveis durante edição, seleção e foco. */
+.stApp input,.stApp textarea{
+    color:var(--tx)!important;-webkit-text-fill-color:var(--tx)!important;
+    caret-color:var(--tx)!important;text-shadow:none!important;
+}
+.stApp [data-baseweb="input"],.stApp [data-baseweb="textarea"],
+.stApp [data-baseweb="select"]>div{background:var(--wh)!important;}
+.stApp input,.stApp textarea{background:transparent!important;}
+.stApp input::placeholder,.stApp textarea::placeholder{
+    color:var(--mu)!important;-webkit-text-fill-color:var(--mu)!important;opacity:1!important;
+}
+.stApp [data-baseweb="select"]{color:var(--tx)!important;text-shadow:none!important;}
+.stApp [data-testid="stWidgetLabel"]{text-shadow:none!important;}
+[data-testid="stSidebar"] [data-baseweb="input"],
+[data-testid="stSidebar"] [data-baseweb="textarea"],
+[data-testid="stSidebar"] [data-baseweb="select"]>div{background:#123723!important;}
+[data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea{
+    color:#ffffff!important;-webkit-text-fill-color:#ffffff!important;caret-color:#ffffff!important;
+    background:transparent!important;text-shadow:none!important;
+}
+[data-testid="stSidebar"] input::placeholder,[data-testid="stSidebar"] textarea::placeholder{
+    color:#b8ddc7!important;-webkit-text-fill-color:#b8ddc7!important;opacity:1!important;
+}
+/* Busca e campos livres usam fundo claro; não herdam o texto branco dos filtros. */
+[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="input"],
+[data-testid="stSidebar"] [data-testid="stTextInput"] [data-baseweb="base-input"],
+[data-testid="stSidebar"] [data-testid="stTextInputRootElement"],
+[data-testid="stSidebar"] [data-testid="stTextArea"] [data-baseweb="textarea"]{
+    background:#ffffff!important;
+}
+[data-testid="stSidebar"] [data-testid="stTextInput"] input,
+[data-testid="stSidebar"] [data-testid="stTextArea"] textarea{
+    background:#ffffff!important;color:#0d2a16!important;
+    -webkit-text-fill-color:#0d2a16!important;caret-color:#0d2a16!important;
+    text-shadow:none!important;
+}
+[data-testid="stSidebar"] [data-testid="stTextInput"] input::placeholder,
+[data-testid="stSidebar"] [data-testid="stTextArea"] textarea::placeholder{
+    color:#526b5a!important;-webkit-text-fill-color:#526b5a!important;opacity:1!important;
+}
+[data-testid="stSidebar"] [data-baseweb="select"]>div div{color:#ffffff!important;text-shadow:none!important;}
+[data-baseweb="popover"] [role="listbox"]{background:#ffffff!important;color:#0d2a16!important;text-shadow:none!important;}
+[data-baseweb="popover"] [role="option"]{color:#0d2a16!important;text-shadow:none!important;}
 [data-testid="stSidebar"] .stButton>button{background:rgba(248,193,10,.12)!important;border:1.5px solid rgba(248,193,10,.35)!important;color:var(--am)!important;border-radius:9px!important;font-weight:700!important;font-size:.82rem!important;transition:all .2s!important;}
 [data-testid="stSidebar"] .stButton>button:hover{background:var(--am)!important;color:var(--vd)!important;}
 
