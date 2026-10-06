@@ -14,6 +14,8 @@ import base64, os
 import textwrap
 import html as html_lib
 import numpy as np
+import time
+from sheet_sync import synchronize_processes
 from db import (
     listar_processos, inserir_processo, atualizar_processo, deletar_processo,
     filter_opts, drive_preview, drive_direct,
@@ -324,8 +326,25 @@ def apply_filter(df, col, val):
     return df
 
 @st.cache_data(ttl=60, show_spinner=False)
+def load_catalog():
+    try:
+        report = synchronize_processes()
+        error = None
+    except Exception as exc:
+        # Mantém o catálogo disponível e informa a falha de sincronização.
+        report, error = None, str(exc)
+    return listar_processos(), report, error
+
+
 def load():
-    return listar_processos()
+    return load_catalog()[0]
+
+
+@st.fragment(run_every=60)
+def refresh_catalog():
+    if time.monotonic() - st.session_state.get("catalog_loaded_at", 0) >= 60:
+        load_catalog.clear()
+        st.rerun()
 
 
 with st.sidebar:
@@ -346,12 +365,19 @@ with st.sidebar:
 
     with st.spinner("Carregando..."):
         try:
-            df_raw = load()
+            df_raw, sync_report, sync_error = load_catalog()
+            st.session_state["catalog_loaded_at"] = time.monotonic()
         except Exception as e:
             st.error(f"Erro no banco:\n{e}"); st.stop()
 
     if df_raw.empty:
         st.warning("Nenhum processo cadastrado ainda.")
+
+    if sync_error:
+        st.warning(f"Não foi possível sincronizar a planilha. Exibindo o catálogo do banco. {sync_error}")
+    elif sync_report:
+        st.caption(f"Planilha sincronizada: {sync_report['total']} processos. Atualização automática a cada minuto.")
+    refresh_catalog()
 
     st.markdown('<span class="sb-section">🔍 Filtros</span>', unsafe_allow_html=True)
     #f_obj   = st.selectbox("Objetivo Estratégico", filter_opts(df_raw, "objetivo"))

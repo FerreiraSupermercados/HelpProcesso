@@ -235,7 +235,7 @@ FRENTE_MACROPROCESSOS = {
 # base automática até que ele exista — aí passa a funcionar sozinha.
 FRENTE_POP_BASE = {
     "AÇO-AUD-01": None,
-    "FRE-AUD-02": "POP-3-OPL-3.25",
+    "FRE-AUD-02": "POP-3-OPL-3.23",
     "REC-AUD-03": "POP-2-LGE-2.1",
 }
 
