@@ -152,6 +152,10 @@ As informações são de uso interno. As credenciais são individuais e não dev
 
 Consulta o catálogo de processos vindo do Supabase. Possui filtros laterais, busca livre, tabela e visualização online dos documentos vinculados.
 
+A tabela permite filtrar pelo ícone no cabeçalho de cada coluna: o menu apresenta os valores distintos, pesquisa de opções, caixas de seleção, **Selecionar todos**, **Aplicar** e **Limpar filtro**. Valores vazios aparecem como **(Não preenchido)**. Também é possível ordenar e redimensionar as colunas. Os filtros da tabela se combinam com os da barra lateral e restringem também as opções do visualizador de PDF. A limpeza de cada filtro é feita pelo botão **Limpar filtro** no menu da própria coluna. A tabela usa `streamlit-aggrid` em modo de consulta, com filtro personalizado nos módulos gratuitos e sem edição de cadastros.
+
+O menu de filtro fecha ao clicar fora ou pressionar **Esc**, descartando seleções ainda não aplicadas.
+
 ### Novo Processo
 
 Disponível para administradores. Permite cadastrar um processo, código, macroprocesso, status, criticidade, revisão, observações e link do documento.
