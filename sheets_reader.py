@@ -6,10 +6,94 @@ Lê dados e hiperlinks da planilha via Google Sheets API v4.
 import requests
 import pandas as pd
 from typing import Optional
+import io
+import re
+import zipfile
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
+from decimal import Decimal
 
 
 SPREADSHEET_ID = "1joUKeyGMEi0TjL0aZ3-xGakW8AzhFJ6WwZ-fbrpSUbM"
 SHEET_GID = "1167134340"
+
+
+def fetch_public_sheet_data() -> pd.DataFrame:
+    """Lê a aba pública em XLSX, preservando os hiperlinks que o CSV perde."""
+    response = requests.get(
+        f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export",
+        params={"format": "xlsx", "gid": SHEET_GID}, timeout=30,
+    )
+    response.raise_for_status()
+    return parse_sheet_xlsx(response.content)
+
+
+def parse_sheet_xlsx(content: bytes) -> pd.DataFrame:
+    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    with zipfile.ZipFile(io.BytesIO(content)) as workbook:
+        sheets = ET.fromstring(workbook.read("xl/workbook.xml")).findall("s:sheets/s:sheet", ns)
+        if len(sheets) != 1:
+            raise ValueError("A exportação deve conter somente a aba configurada da planilha.")
+        strings = []
+        if "xl/sharedStrings.xml" in workbook.namelist():
+            strings = ["".join(x.itertext()) for x in ET.fromstring(
+                workbook.read("xl/sharedStrings.xml")).findall("s:si", ns)]
+        tree = ET.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+        styles = ET.fromstring(workbook.read("xl/styles.xml"))
+        custom_formats = {int(x.attrib["numFmtId"]): x.attrib["formatCode"]
+                          for x in styles.findall("s:numFmts/s:numFmt", ns)}
+        format_ids = [int(x.attrib.get("numFmtId", 0))
+                      for x in styles.findall("s:cellXfs/s:xf", ns)]
+        rel_path = "xl/worksheets/_rels/sheet1.xml.rels"
+        relationships = {}
+        if rel_path in workbook.namelist():
+            relationships = {x.attrib["Id"]: x.attrib.get("Target", "")
+                             for x in ET.fromstring(workbook.read(rel_path))}
+        links = {x.attrib["ref"]: relationships.get(x.attrib.get(f"{{{rel_ns}}}id"), "")
+                 for x in tree.findall("s:hyperlinks/s:hyperlink", ns)}
+        rows = []
+        for row in tree.findall("s:sheetData/s:row", ns):
+            values = {}
+            for cell in row.findall("s:c", ns):
+                ref = cell.attrib["r"]
+                index = 0
+                for letter in re.match(r"[A-Z]+", ref).group():
+                    index = index * 26 + ord(letter) - ord("A") + 1
+                value = cell.find("s:v", ns)
+                value = value.text or "" if value is not None else ""
+                if cell.attrib.get("t") == "s":
+                    value = strings[int(value)]
+                elif cell.attrib.get("t") == "inlineStr":
+                    value = "".join(cell.find("s:is", ns).itertext())
+                elif value and cell.attrib.get("t", "n") == "n":
+                    fmt_id = format_ids[int(cell.attrib.get("s", 0))]
+                    fmt = custom_formats.get(fmt_id, "")
+                    if fmt_id in range(14, 23) or re.search(r"[dy]", re.sub(r'"[^"]*"', '', fmt), re.I):
+                        value = (datetime(1899, 12, 30) + timedelta(days=float(value))).strftime("%d/%m/%Y")
+                    else:
+                        value = format(Decimal(value).normalize(), "f")
+                values[index - 1] = (value, links.get(ref, ""))
+            rows.append(values)
+        if not rows:
+            raise ValueError("A planilha não possui cabeçalho.")
+        headers, seen = [], {}
+        for index in range(max(rows[0]) + 1):
+            header = rows[0].get(index, ("", ""))[0].strip() or f"Col_{index}"
+            count = seen.get(header, 0)
+            seen[header] = count + 1
+            headers.append(f"{header}_{count}" if count else header)
+        records = []
+        for row in rows[1:]:
+            record = {}
+            for index, header in enumerate(headers):
+                value, link = row.get(index, ("", ""))
+                record[header] = value
+                if link:
+                    record[f"_link_{header}"] = link
+            if any(str(v).strip() for v in record.values()):
+                records.append(record)
+        return pd.DataFrame(records)
 
 
 def get_sheet_name_by_gid(api_key: str, gid: str) -> Optional[str]:

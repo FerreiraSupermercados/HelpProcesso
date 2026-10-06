@@ -26,6 +26,7 @@ O projeto é uma aplicação [Streamlit](https://streamlit.io/) conectada ao Sup
 - PyPDF2 — leitura inicial do relatório/checklist importado
 - pdfplumber — leitura página a página do POP
 - Google Drive — armazenamento dos PDFs por link público
+- Google Sheets — fonte oficial do catálogo, sincronizada para o Supabase
 
 ## Estrutura do projeto
 
@@ -57,9 +58,15 @@ Centraliza o acesso ao Supabase, incluindo:
 - registro do aceite de LGPD;
 - associação padrão entre frente de auditoria e POP-base.
 
-### `sheets_reader.py`
+### `sheets_reader.py` e `sheet_sync.py`
 
-Módulo auxiliar para leitura de uma planilha do Google Sheets, incluindo hiperlinks. Ele não é o caminho principal de persistência da aplicação atual; o fluxo principal usa o Supabase.
+Leem a aba pública **Novo Repositorio** da planilha configurada em `SPREADSHEET_ID` / `SHEET_GID` e sincronizam seus processos e hiperlinks para o Supabase. A leitura usa a exportação XLSX, que preserva links vinculados a nomes de PDFs, sem precisar de uma chave da API do Google.
+
+O fluxo é **planilha → Supabase → dashboard**. A planilha prevalece nos nomes, códigos e demais campos do catálogo. Os IDs internos dos processos são preservados pelo nome ou pelo documento exato; renumerações não devem trocar a identidade de dois POPs. Registros existentes apenas no banco são mantidos. Cabeçalhos ausentes, códigos duplicados e correspondências ambíguas bloqueiam a sincronização e geram um aviso no painel.
+
+A sincronização ocorre ao carregar o catálogo e a cada minuto enquanto o dashboard está aberto. O botão **Atualizar** força uma nova leitura. Sem uma sessão aberta, não existe agendamento em segundo plano. Falhas de acesso à planilha são informadas e o dashboard continua consultando os dados disponíveis no Supabase.
+
+Os PDFs continuam no Drive; são sincronizados os links, não os arquivos. A permissão pública de cada PDF continua necessária para download e análise.
 
 ## Instalação local
 
@@ -303,7 +310,7 @@ O mapa abaixo fica em `db.py` e funciona como sugestão estrita de documento pad
 | Código da frente | Frente | POP-base configurado |
 |---|---|---|
 | `AÇO-AUD-01` | Açougue | Nenhum configurado atualmente |
-| `FRE-AUD-02` | Frente de Loja | `POP-3-OPL-3.25` |
+| `FRE-AUD-02` | Frente de Loja | `POP-3-OPL-3.23` |
 | `REC-AUD-03` | Recebimento | `POP-2-LGE-2.1` |
 | `ATA-AUD-04` | Atacado | Nenhum configurado atualmente |
 
@@ -362,6 +369,7 @@ Com o ambiente virtual ativado:
 ```bash
 python -m py_compile app.py
 python -m pip check
+python -m unittest test_sheet_sync -v
 ```
 
 Para um smoke test da interface, abra a aplicação e valide:
