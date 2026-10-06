@@ -16,6 +16,7 @@ import html as html_lib
 import numpy as np
 import time
 from sheet_sync import synchronize_processes
+from process_grid import render_process_grid
 from db import (
     listar_processos, inserir_processo, atualizar_processo, deletar_processo,
     filter_opts, drive_preview, drive_direct,
@@ -502,54 +503,14 @@ with tabs[0]:
     # ── Tabela ──
     # Exibe apenas as colunas que realmente existem no df
     cols_visiveis = [c for c in COLS_TABELA if c in df_raw.columns]
-    n_filt = len(df)
-
-    st.markdown(f"""
-    <div class="table-wrap">
-      <div class="table-toolbar">
-        <span class="results-pill">{n_filt} processo(s)</span>
-        <span style="font-size:.72rem;color:var(--mu);">{total} total · filtre pela barra lateral</span>
-      </div>""", unsafe_allow_html=True)
-
-    if df.empty:
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.info("Nenhum processo encontrado com os filtros aplicados.")
-    else:
-        th = "".join(f"<th>{LABELS.get(c, c)}</th>" for c in cols_visiveis)
-        th += '<th class="c-doc">Documento</th>'
-
-        tbody = ""
-        for _, row in df.iterrows():
-            tds = ""
-            for col in cols_visiveis:
-                val = str(row.get(col, "")).strip()
-                if col == "status":
-                    val = badge_status(val)
-                elif col == "criticidade":
-                    val = badge_crit(val)
-                tds += f"<td>{val}</td>"
-
-            url_d = str(row.get("link_direto", "")).strip()
-            doc_cell = (
-                f'<a class="pdf-btn" href="{url_d}" target="_blank" rel="noopener">📄 Abrir PDF</a>'
-                if url_d.startswith("http") else '<span class="no-link">—</span>'
-            )
-            tds += f'<td class="c-doc">{doc_cell}</td>'
-            tbody += f"<tr>{tds}</tr>"
-
-        st.markdown(f"""
-          <div class="table-scroll">
-            <table class="fff-table">
-              <thead><tr>{th}</tr></thead>
-              <tbody>{tbody}</tbody>
-            </table>
-          </div>
-        </div>""", unsafe_allow_html=True)
+    resumo_tabela = st.empty()
+    df_tabela = render_process_grid(df, cols_visiveis, LABELS)
+    resumo_tabela.caption(f"{len(df_tabela)} processo(s) exibido(s) · {total} no catálogo")
 
     # ── Visualizador online de PDF ──
     st.markdown("<br>", unsafe_allow_html=True)
-    if not df.empty and "link_direto" in df.columns:
-        df_pdf = df[df["link_direto"].astype(str).str.startswith("http")]
+    if not df_tabela.empty and "link_direto" in df_tabela.columns:
+        df_pdf = df_tabela[df_tabela["link_direto"].astype(str).str.startswith("http")]
         if not df_pdf.empty:
             with st.expander("🔍 Visualizar PDF online", expanded=False):
                 st.caption("Selecione um processo para ver o documento sem sair da página.")
