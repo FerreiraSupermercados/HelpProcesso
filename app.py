@@ -503,9 +503,21 @@ with tabs[0]:
     # ── Tabela ──
     # Exibe apenas as colunas que realmente existem no df
     cols_visiveis = [c for c in COLS_TABELA if c in df_raw.columns]
-    resumo_tabela = st.empty()
+    col_resumo, col_limpar = st.columns([5, 1], vertical_alignment="center")
+    resumo_tabela = col_resumo.empty()
+    botao_limpar = col_limpar.empty()
     df_tabela = render_process_grid(df, cols_visiveis, LABELS)
     resumo_tabela.caption(f"{len(df_tabela)} processo(s) exibido(s) · {total} no catálogo")
+
+    def limpar_filtros_tabela():
+        st.session_state.pop("processos_grid_state", None)
+        st.session_state["processos_grid_reset"] = st.session_state.get("processos_grid_reset", 0) + 1
+
+    botao_limpar.button(
+        "✕ Limpar filtros", key="processos_limpar_filtros", use_container_width=True,
+        on_click=limpar_filtros_tabela, disabled=len(df_tabela) == len(df),
+        help="Remove os filtros aplicados nas colunas da tabela",
+    )
 
     # ── Visualizador online de PDF ──
     st.markdown("<br>", unsafe_allow_html=True)

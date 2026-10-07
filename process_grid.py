@@ -1,4 +1,6 @@
 """Tabela de processos com filtros nos próprios cabeçalhos."""
+import json
+
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, DataReturnMode, JsCode
@@ -38,24 +40,39 @@ class ColumnValuesFilter {
         clear.type = 'button'; clear.textContent = 'Limpar filtro';
         clear.style.cssText = 'padding:7px 12px;border:1px solid #b8ddc7;border-radius:5px;background:#fff;color:#0d2a16;cursor:pointer';
         clear.addEventListener('click', () => {
+            this.draft = new Set(this.values);
             this.selected = null;
             this.params.filterChangedCallback();
-            if (this.hidePopup) this.hidePopup();
+            this.rememberUserFilter();
+            this.closePopup();
         });
         const apply = document.createElement('button');
         apply.type = 'button'; apply.textContent = 'Aplicar';
         apply.style.cssText = 'padding:7px 18px;border:0;border-radius:5px;background:#0a3d1f;color:#fff;cursor:pointer';
         apply.addEventListener('click', () => {
-            const chosen = this.values.filter(value => this.draft.has(value));
-            this.selected = chosen.length === this.values.length ? null : new Set(chosen);
-            this.params.filterChangedCallback();
-            if (this.hidePopup) this.hidePopup();
+            this.applyDraft();
+            this.closePopup();
         });
         actions.append(clear, apply);
         this.root.appendChild(actions);
         this.refreshValues();
         this.draft = new Set(this.values);
         this.renderList();
+    }
+    applyDraft() {
+        if (!this.draft) return;
+        const chosen = this.values.filter(value => this.draft.has(value));
+        const next = chosen.length === this.values.length ? null : new Set(chosen);
+        const key = s => s === null ? null : [...s].sort().join('\u0001');
+        if (key(next) === key(this.selected)) return;
+        this.selected = next;
+        this.params.filterChangedCallback();
+        this.rememberUserFilter();
+    }
+    // Guarda só escolhas feitas pelo usuário; o reset que o grid faz ao recarregar
+    // os dados não pode sobrescrever isso.
+    rememberUserFilter() {
+        window.__processosFiltro = this.params.api.getFilterModel() || {};
     }
     value(node) { return String(node.data[this.params.colDef.field] ?? '').trim(); }
     refreshValues() {
@@ -90,7 +107,7 @@ class ColumnValuesFilter {
         const visible = this.visibleValues();
         const count = visible.filter(value => this.draft.has(value)).length;
         this.all.checked = visible.length > 0 && count === visible.length;
-        this.all.indeterminate = count > 0 && count < visible.length;
+        this.all.indeterminate = false;
     }
     afterGuiAttached(params) {
         this.removeDismissListeners();
@@ -100,13 +117,17 @@ class ColumnValuesFilter {
         this.draft = this.selected === null ? new Set(this.values) : new Set(this.selected);
         this.renderList(); this.search.focus();
         // O menu está em um iframe; cliques no dashboard não chegam ao grid.
+        // Clicar fora aplica a seleção, como o botão Aplicar; Esc descarta.
         this.outsideClick = event => {
-            if (!this.root.contains(event.target)) this.closePopup();
+            if (!this.root.contains(event.target)) { this.applyDraft(); this.closePopup(); }
         };
         this.escapeKey = event => {
-            if (event.key === 'Escape') this.closePopup();
+            if (event.key === 'Escape') {
+                this.draft = this.selected === null ? new Set(this.values) : new Set(this.selected);
+                this.closePopup();
+            }
         };
-        this.windowBlur = () => this.closePopup();
+        this.windowBlur = () => { this.applyDraft(); this.closePopup(); };
         this.dismissDocuments = [document];
         try {
             if (window.parent !== window && window.parent.document) {
@@ -161,6 +182,21 @@ class PdfLink {
 """)
 
 
+def restore_filters_js(filter_model):
+    # A atualização automática do catálogo recarrega as linhas e o grid perde o filtro.
+    # Reaplica a última escolha feita no navegador (que inclui "Limpar filtro"); o estado
+    # vindo do servidor só serve de fallback, pois pode estar uma ação atrasado.
+    return JsCode(f"""
+    function(params) {{
+        const saved = window.__processosFiltro !== undefined
+            ? window.__processosFiltro
+            : {json.dumps(filter_model or {}, ensure_ascii=False)};
+        const current = params.api.getFilterModel() || {{}};
+        if (JSON.stringify(current) !== JSON.stringify(saved)) params.api.setFilterModel(saved);
+    }}
+    """)
+
+
 def grid_options(columns, labels, state=None):
     definitions = [{"field": c, "headerName": labels.get(c, c),
                     "width": 320 if c == "processo" else 230 if c in ("macroprocesso", "tipo_documento", "tipo_criterio") else 150,
@@ -186,6 +222,9 @@ def grid_options(columns, labels, state=None):
     }
     if state:
         options["initialState"] = state
+    restore = restore_filters_js(((state or {}).get("filter") or {}).get("filterModel"))
+    options["onFirstDataRendered"] = restore
+    options["onRowDataUpdated"] = restore
     return options
 
 
