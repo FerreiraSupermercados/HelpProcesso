@@ -2,6 +2,7 @@
 import re
 import unicodedata
 import threading
+from collections import Counter
 from sheets_reader import fetch_public_sheet_data
 
 _SYNC_LOCK = threading.Lock()
@@ -69,10 +70,12 @@ def sheet_records(frame):
         records.append(record)
     if not records:
         raise ValueError("Nenhum processo encontrado na planilha; banco preservado.")
-    for field in ("processo", "codigo_2"):
-        values = [comparable(r[field]) for r in records if r[field]]
-        if len(values) != len(set(values)):
-            raise ValueError(f"Planilha possui {field} duplicado; sincronização cancelada.")
+    chaves = [(comparable(r["processo"]), comparable(r["macroprocesso"])) for r in records]
+    if len(chaves) != len(set(chaves)):
+        raise ValueError("Planilha possui processo duplicado no mesmo macroprocesso; sincronização cancelada.")
+    codigos = [comparable(r["codigo_2"]) for r in records if r["codigo_2"]]
+    if len(codigos) != len(set(codigos)):
+        raise ValueError("Planilha possui codigo_2 duplicado; sincronização cancelada.")
     return records
 
 
@@ -87,9 +90,14 @@ def build_sync_plan(records, existing):
         if row.get("codigo_2"):
             codes.setdefault(comparable(row["codigo_2"]), []).append(row)
     sheet_names = {process_name(r["processo"]) for r in records}
+    sheet_counts = Counter(process_name(r["processo"]) for r in records)
     used, updates, inserts = set(), [], []
     for record in records:
-        matches = names.get(process_name(record["processo"]), [])
+        nome = process_name(record["processo"])
+        macro = comparable(record["macroprocesso"])
+        matches = [r for r in names.get(nome, []) if comparable(r.get("macroprocesso")) == macro]
+        if not matches and sheet_counts[nome] == 1:
+            matches = names.get(nome, [])
         if not matches and record["link_documento"]:
             matches = [r for r in documents.get(document_key(record["link_documento"]), [])
                        if process_name(r["processo"]) not in sheet_names]

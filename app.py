@@ -2574,6 +2574,150 @@ with tabs[audit_tab_index]:
                                .drop_duplicates(['_data_str', 'tipo'], keep='last')
                 )
                 datas_evolucao = sorted(df_evolucao['_data_str'].dropna().unique().tolist())
+                n_datas = len(datas_evolucao)
+
+                if n_datas >= 2:
+                    estilo_comparativo = """<style>
+.aud-cmp-resumo{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.aud-cmp-chip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--papel);border:1px solid var(--borda);border-radius:10px;padding:8px 14px;font-size:12px;color:var(--suave)}
+.aud-cmp-chip b{font-family:var(--disp);font-size:16px;color:var(--texto)}
+.aud-cmp-grade{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px}
+.aud-cmp-frente{border:1px solid var(--borda);border-radius:12px;padding:14px 16px;background:var(--branco)}
+.aud-cmp-frente-topo{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.aud-cmp-datas{font-size:12px;color:var(--suave);white-space:nowrap}
+.aud-cmp-nota{display:flex;align-items:center;gap:12px;background:var(--papel);border-radius:10px;padding:10px 14px;margin-bottom:6px}
+.aud-cmp-nota small{display:block;font-size:11px;color:var(--suave);text-transform:uppercase;letter-spacing:.4px}
+.aud-cmp-nota b{font-family:var(--disp);font-size:22px;line-height:1.1;color:var(--texto)}
+.aud-cmp-nota .seta{color:var(--suave);font-size:16px}
+.aud-cmp-nota .aud-cmp-delta{margin-left:auto}
+.aud-cmp-delta{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap}
+.aud-cmp-delta.sobe{background:#e3f4e5;color:#1E7A2A}
+.aud-cmp-delta.desce{background:#fbe6e6;color:#C23B3B}
+.aud-cmp-delta.neutro{background:var(--papel);color:var(--suave)}
+.aud-cmp-bloco{display:grid;grid-template-columns:128px 1fr 118px 76px;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid #EEF3EE}
+.aud-cmp-bloco .nome{font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.aud-cmp-trilhos{display:grid;gap:4px}
+.aud-cmp-trilho{height:8px;background:var(--papel);border-radius:4px;overflow:hidden}
+.aud-cmp-trilho i{display:block;height:100%;border-radius:4px}
+.aud-cmp-trilho.ant i{background:#c5cfc7}
+.aud-cmp-bloco .vals{font-size:12px;color:var(--suave);white-space:nowrap;text-align:right}
+.aud-cmp-bloco .vals b{font-family:var(--disp);font-size:14px}
+.aud-cmp-bloco .aud-cmp-delta{justify-self:end}
+.aud-cmp-legenda{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--suave);margin-top:14px;padding-top:10px;border-top:1px solid #EEF3EE}
+.aud-cmp-legenda i{display:inline-block;width:14px;height:6px;border-radius:3px;margin-right:6px;vertical-align:middle;background:#5b6a5e}
+.aud-cmp-legenda i.ant{background:#c5cfc7}
+.aud-cmp-rodape{font-size:12.5px;color:var(--suave);margin-top:12px}
+</style>
+"""
+
+                    def _comparar_frente(tipo):
+                        sub = df_evolucao[df_evolucao['tipo'] == tipo].sort_values('_data_str')
+                        if len(sub) < 2:
+                            return None
+                        ant, atu = sub.iloc[-2], sub.iloc[-1]
+                        nota_ant = pd.to_numeric(ant.get('total'), errors='coerce')
+                        nota_atu = pd.to_numeric(atu.get('total'), errors='coerce')
+                        if pd.isna(nota_ant) or pd.isna(nota_atu):
+                            return None
+                        return {
+                            'data_ant': ant['_data_str'],
+                            'data_atu': atu['_data_str'],
+                            'nota_ant': float(nota_ant),
+                            'nota_atu': float(nota_atu),
+                            'blocos_ant': [_aud_pct(ant, i) for i in range(5)],
+                            'blocos_atu': [_aud_pct(atu, i) for i in range(5)],
+                        }
+
+                    def _pilula_delta(delta):
+                        if abs(delta) < 0.005:
+                            return f'<span class="aud-cmp-delta neutro">● {delta:+.2f}</span>'
+                        classe, seta = ('sobe', '▲') if delta > 0 else ('desce', '▼')
+                        return f'<span class="aud-cmp-delta {classe}">{seta} {delta:+.2f}</span>'
+
+                    comparacoes = {}
+                    for tipo in CHECKLISTS:
+                        cmp_frente = _comparar_frente(tipo)
+                        if cmp_frente:
+                            comparacoes[tipo] = cmp_frente
+
+                    cards_frentes = []
+                    variacoes_nota = []
+                    blocos_melhoraram = 0
+                    for tipo, cmp_frente in comparacoes.items():
+                        config = CHECKLISTS[tipo]
+                        delta_nota = cmp_frente['nota_atu'] - cmp_frente['nota_ant']
+                        variacoes_nota.append(delta_nota)
+                        cor_nota = _aud_faixa_v2(cmp_frente['nota_atu'])['cor']
+                        linhas_blocos = []
+                        for i in range(5):
+                            ant_b = cmp_frente['blocos_ant'][i]
+                            atu_b = cmp_frente['blocos_atu'][i]
+                            delta_b = atu_b - ant_b
+                            if delta_b > 0.005:
+                                blocos_melhoraram += 1
+                            cor_b = _aud_faixa_v2(atu_b)['cor']
+                            rotulo = f'{LETRAS_BLOCO[i]}. {SLOTS_CURTOS[i]}'
+                            linhas_blocos.append(
+                                '<div class="aud-cmp-bloco">'
+                                f'<span class="nome">{html_lib.escape(rotulo)}</span>'
+                                '<div class="aud-cmp-trilhos">'
+                                f'<div class="aud-cmp-trilho ant"><i style="width:{min(100, max(0, ant_b)):.2f}%"></i></div>'
+                                f'<div class="aud-cmp-trilho"><i style="width:{min(100, max(0, atu_b)):.2f}%;background:{cor_b}"></i></div>'
+                                '</div>'
+                                f'<span class="vals"><span>{ant_b:.2f}</span> → <b style="color:{cor_b}">{atu_b:.2f}</b></span>'
+                                f'{_pilula_delta(delta_b)}'
+                                '</div>'
+                            )
+                        cards_frentes.append(
+                            '<div class="aud-cmp-frente">'
+                            '<div class="aud-cmp-frente-topo">'
+                            f'<span class="aud-v2-selo" style="background:{config["cor"]}">{html_lib.escape(str(config["nome"]))}</span>'
+                            f'<span class="aud-cmp-datas">{html_lib.escape(data_br(cmp_frente["data_ant"]))} → {html_lib.escape(data_br(cmp_frente["data_atu"]))}</span>'
+                            '</div>'
+                            '<div class="aud-cmp-nota">'
+                            f'<div><small>Anterior</small><b>{cmp_frente["nota_ant"]:.2f}</b></div>'
+                            '<span class="seta">→</span>'
+                            f'<div><small>Atual</small><b style="color:{cor_nota}">{cmp_frente["nota_atu"]:.2f}</b></div>'
+                            f'{_pilula_delta(delta_nota)}'
+                            '</div>'
+                            + ''.join(linhas_blocos)
+                            + '</div>'
+                        )
+
+                    sem_comparacao = [str(config['nome']) for tipo, config in CHECKLISTS.items() if tipo not in comparacoes]
+                    if comparacoes:
+                        media_variacao = sum(variacoes_nota) / len(variacoes_nota)
+                        total_blocos = 5 * len(comparacoes)
+                        conteudo = (
+                            '<div class="aud-cmp-resumo">'
+                            f'<div class="aud-cmp-chip">Frentes comparadas<b>{len(comparacoes)} de {len(CHECKLISTS)}</b></div>'
+                            f'<div class="aud-cmp-chip">Variação média da nota {_pilula_delta(media_variacao)}</div>'
+                            f'<div class="aud-cmp-chip">Blocos que melhoraram<b>{blocos_melhoraram} de {total_blocos}</b></div>'
+                            '</div>'
+                            f'<div class="aud-cmp-grade">{"".join(cards_frentes)}</div>'
+                        )
+                        rodape = (
+                            f'<div class="aud-cmp-rodape">Sem comparação ainda: {html_lib.escape(", ".join(sem_comparacao))}. '
+                            'É preciso ter ao menos duas auditorias da mesma frente.</div>'
+                            if sem_comparacao else ''
+                        )
+                    else:
+                        conteudo = (
+                            '<div class="aud-v2-empty">Nenhuma frente desta unidade tem duas auditorias ainda. '
+                            'A comparação aparece quando a próxima auditoria de uma frente for registrada.</div>'
+                        )
+                        rodape = ''
+
+                    _aud_render(
+                        estilo_comparativo
+                        + '<div class="aud-v2-card aud-cmp">'
+                        + '<h3>Comparativo entre auditorias <span class="leve">cada frente é comparada com ela mesma</span></h3>'
+                        + conteudo
+                        + rodape
+                        + '<div class="aud-cmp-legenda"><span><i class="ant"></i>barra cinza: auditoria anterior</span>'
+                        + '<span><i></i>barra colorida: auditoria atual</span></div>'
+                        + '</div>'
+                    )
 
                 if len(datas_evolucao) < 2:
                     _aud_render('''
@@ -2582,6 +2726,8 @@ with tabs[audit_tab_index]:
                             <div class="aud-v2-empty">Há apenas um ciclo de auditoria nesta unidade. A série aparece quando o próximo ciclo for registrado.</div>
                         </div>
                     ''')
+                elif n_datas < 5:
+                    st.caption(f"O gráfico de histórico e o detalhamento por auditoria aparecem com 5 ou mais auditorias desta unidade (hoje: {n_datas}).")
                 else:
                     series = {}
                     valores_grafico = []
