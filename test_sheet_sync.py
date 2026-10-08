@@ -6,11 +6,35 @@ from sheet_sync import FIELDS, build_sync_plan, sheet_records
 from sheets_reader import parse_sheet_xlsx
 
 
-def record(name, code, link=""):
-    return {**dict.fromkeys(FIELDS, ""), "processo": name, "codigo_2": code, "link_documento": link}
+def record(name, code, link="", macro=""):
+    return {**dict.fromkeys(FIELDS, ""), "processo": name, "codigo_2": code, "link_documento": link, "macroprocesso": macro}
+
+
+def as_row(rec):
+    return {FIELDS[k][0]: v for k, v in rec.items()}
 
 
 class SyncTests(unittest.TestCase):
+    def test_same_name_in_different_macros_is_not_a_duplicate(self):
+        frame = pd.DataFrame([as_row(record("Brigada", "POP-3.3", macro="Operações")),
+                              as_row(record("Brigada", "POP-15.7", macro="Gestão de Riscos"))])
+        old = pd.DataFrame([{**record("Brigada", "POP-3.3", macro="Operações"), "id": 11}])
+        plan = build_sync_plan(sheet_records(frame), old)
+        self.assertEqual(plan["updates"], [])
+        self.assertEqual([r["codigo_2"] for r in plan["inserts"]], ["POP-15.7"])
+
+    def test_same_name_and_macro_is_still_rejected(self):
+        frame = pd.DataFrame([as_row(record("Brigada", "POP-3.3", macro="Operações")),
+                              as_row(record("Brigada", "POP-4.1", macro="Operações"))])
+        with self.assertRaises(ValueError):
+            sheet_records(frame)
+
+    def test_macro_change_keeps_id_when_name_is_unique(self):
+        old = pd.DataFrame([{**record("Caixas", "POP-23", macro="Loja"), "id": 5}])
+        plan = build_sync_plan([record("Caixas", "POP-23", macro="Gestão")], old)
+        self.assertEqual(plan["updates"], [(5, {"macroprocesso": "Gestão"})])
+        self.assertEqual(plan["inserts"], [])
+
     def test_renumbered_processes_keep_ids(self):
         old = pd.DataFrame([{**record("Caixas", "POP-25"), "id": 1},
                             {**record("Atacado", "POP-23"), "id": 2}])
